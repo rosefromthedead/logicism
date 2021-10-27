@@ -1,115 +1,27 @@
-use std::rc::Rc;
+use std::{rc::Rc, str::FromStr};
 
-use iced::{executor, Application, Command, Element, Point, Settings, Vector};
-use iced_graphics::canvas::Path;
+use druid::{widget::SvgData, AppLauncher, Widget, WindowDesc};
 
 mod canvas;
-mod components;
 
-use canvas::{Canvas, CanvasState, Component, Dragging};
+use canvas::{Canvas, CanvasState};
 
-fn main() -> Result<(), iced::Error> {
-    let mut settings = Settings::default();
-    settings.antialiasing = true;
-    App::run(settings)
+fn main() {
+    let not_gate = SvgData::from_str(include_str!("../res/not_gate.svg")).unwrap();
+    let and_gate = SvgData::from_str(include_str!("../res/and_gate.svg")).unwrap();
+    let or_gate = SvgData::from_str(include_str!("../res/or_gate.svg")).unwrap();
+    let nand_gate = SvgData::from_str(include_str!("../res/nand_gate.svg")).unwrap();
+    let component_icons = Rc::new(vec![not_gate, and_gate, or_gate, nand_gate]);
+
+    let window = WindowDesc::new(move || root_widget(Rc::clone(&component_icons)))
+        .title("Logicism")
+        .window_size((800.0, 600.0));
+
+    AppLauncher::with_window(window)
+        .launch(CanvasState::new())
+        .expect("Failed to launch application");
 }
 
-struct App {
-    canvas_state: CanvasState,
-    component_icons: Rc<Vec<Path>>,
-}
-
-#[derive(Debug)]
-enum Message {
-    AddComponent((usize, usize), usize),
-    HandToolMouseDown(Point),
-    HandToolMouseUp(Point),
-    Drag((usize, usize)),
-    SwitchTool(canvas::Tool),
-}
-
-impl Application for App {
-    type Executor = executor::Default;
-    type Message = Message;
-    type Flags = ();
-
-    fn new(_flags: Self::Flags) -> (Self, Command<Self::Message>) {
-        (
-            App {
-                canvas_state: CanvasState::new(),
-                component_icons: Rc::new(vec![
-                    components::not_gate(),
-                    components::and_gate(),
-                ]),
-            },
-            Command::none(),
-        )
-    }
-
-    fn title(&self) -> String {
-        String::from("Logicism")
-    }
-
-    fn update(
-        &mut self,
-        message: Self::Message,
-        _clipboard: &mut iced::Clipboard,
-    ) -> Command<Self::Message> {
-        match message {
-            Message::AddComponent((x, y), ty) => {
-                self.canvas_state.components.push(Component::new(x, y, ty))
-            },
-            Message::HandToolMouseDown(pos) => {
-                let mut found = false;
-                let mut i = 0;
-                while i < self.canvas_state.components.len() {
-                    if self.canvas_state.components[i]
-                        .bounding_rect()
-                        .contains(pos)
-                    {
-                        found = true;
-                        break;
-                    }
-                    i += 1;
-                }
-
-                if found {
-                    let component = self.canvas_state.components.remove(i);
-                    // fun magic number
-                    let difference = component.bounding_rect().center() - pos + Vector::new(0., 8.);
-                    let dragging = Dragging {
-                        component,
-                        mouse_offset: difference,
-                    };
-                    self.canvas_state.dragging = Some(dragging);
-                }
-            },
-            Message::HandToolMouseUp(pos) => {
-                if let Some(mut dragging) = self.canvas_state.dragging.take() {
-                    let (x, y) = Canvas::mouse_to_coords(pos + dragging.mouse_offset);
-                    dragging.component.x = x;
-                    dragging.component.y = y;
-                    self.canvas_state.components.push(dragging.component);
-                }
-            },
-            Message::SwitchTool(tool) => {
-                dbg!(&tool);
-                self.canvas_state.tool = tool;
-            },
-            Message::Drag((x, y)) => {
-                let c = &mut self.canvas_state.dragging.as_mut().unwrap().component;
-                c.x = x;
-                c.y = y;
-            },
-        }
-
-        Command::none()
-    }
-
-    fn view(&mut self) -> Element<'_, Self::Message> {
-        Element::new(Canvas::new(
-            self.canvas_state.clone(),
-            Rc::clone(&self.component_icons),
-        ))
-    }
+fn root_widget(component_icons: Rc<Vec<SvgData>>) -> impl Widget<CanvasState> {
+    Canvas::new(component_icons)
 }

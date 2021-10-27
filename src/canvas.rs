@@ -1,71 +1,66 @@
-use std::{hash::Hasher, rc::Rc};
+use std::rc::Rc;
 
-use iced::{
-    mouse::Interaction, Background, Color, Length, Point, Rectangle, Size, Vector,
+use druid::{
+    im::Vector, widget::SvgData, Affine, Color, Data, MouseButton, Point, Rect, RenderContext,
+    Size, Vec2, Widget,
 };
-use iced_graphics::{Backend, Primitive, Renderer, canvas::{Frame, Path}};
-use iced_native::{event::Status, layout::Node, Widget};
 
-use crate::{Message, components::default_stroke};
-
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Data, Debug, PartialEq, Eq)]
 pub enum Tool {
     Hand,
-    Place(usize),
+    Place(u16),
 }
 
-#[derive(Clone)]
-pub struct Component {
-    pub x: usize,
-    pub y: usize,
-    pub ty: usize,
+#[derive(Clone, Data)]
+struct Component {
+    x: usize,
+    y: usize,
+    ty: u16,
 }
 
 impl Component {
-    pub fn new(x: usize, y: usize, ty: usize) -> Self {
+    fn new(x: usize, y: usize, ty: u16) -> Self {
         Component { x, y, ty }
     }
 
-    pub fn bounding_rect(&self) -> Rectangle {
-        let top_left = Point::new(self.x as f32 * 16. - 16., self.y as f32 * 16. - 24.);
-        Rectangle::new(top_left, Size::new(48., 48.))
+    pub fn bounding_rect(&self) -> Rect {
+        let center = Point::new(self.x as f64 * 16.0, self.y as f64 * 16.0);
+        Rect::from_center_size(center, Size::new(48., 48.))
     }
 }
 
-#[derive(Clone)]
-pub struct Dragging {
+#[derive(Clone, Data)]
+struct Dragging {
     pub component: Component,
-    pub mouse_offset: Vector,
+    pub mouse_offset: Vec2,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Data)]
 pub struct CanvasState {
-    pub components: Vec<Component>,
-    pub tool: Tool,
-    pub dragging: Option<Dragging>,
+    components: Vector<Component>,
+    tool: Tool,
+    dragging: Option<Dragging>,
+    mouse_pos: Option<(usize, usize)>,
 }
 
 impl CanvasState {
     pub fn new() -> Self {
         CanvasState {
-            components: Vec::new(),
+            components: Vector::new(),
             tool: Tool::Hand,
             dragging: None,
+            mouse_pos: None,
         }
     }
 }
 
 pub struct Canvas {
-    state: CanvasState,
-    component_icons: Rc<Vec<Path>>,
+    component_icons: Rc<Vec<SvgData>>,
 }
 
 impl Canvas {
-    pub fn new(state: CanvasState, component_icons: Rc<Vec<Path>>) -> Self {
-        Canvas {
-            state,
-            component_icons,
-        }
+    pub fn new(component_icons: Rc<Vec<SvgData>>) -> Self {
+        Canvas { component_icons }
     }
 
     pub fn mouse_to_coords(mouse_pos: Point) -> (usize, usize) {
@@ -76,134 +71,186 @@ impl Canvas {
     }
 }
 
-impl<B> Widget<Message, Renderer<B>> for Canvas
-where
-    B: Backend,
-{
-    fn width(&self) -> iced::Length {
-        Length::Fill
-    }
-
-    fn height(&self) -> iced::Length {
-        Length::Fill
-    }
-
-    fn layout(
-        &self,
-        _renderer: &Renderer<B>,
-        limits: &iced_native::layout::Limits,
-    ) -> iced_native::layout::Node {
-        Node::new(limits.max())
-    }
-
-    fn draw(
-        &self,
-        _renderer: &mut Renderer<B>,
-        _defaults: &<iced_graphics::Renderer<B> as iced_native::Renderer>::Defaults,
-        layout: iced_native::Layout<'_>,
-        cursor_position: Point,
-        _viewport: &Rectangle,
-    ) -> <iced_graphics::Renderer<B> as iced_native::Renderer>::Output {
-        let size = layout.bounds().size();
-        let mut primitives = Vec::new();
-        let mut frame = Frame::new(size);
-
-        // dots
-        for x in 0..size.width as usize / 16 {
-            for y in 0..size.height as usize / 16 {
-                let top_left = Point {
-                    x: (16 * x + 7) as f32,
-                    y: (16 * y + 7) as f32,
-                };
-                primitives.push(Primitive::Quad {
-                    bounds: Rectangle::new(top_left, Size::new(2., 2.)),
-                    background: Background::Color(Color::new(0.8, 0.8, 0.8, 1.0)),
-                    border_radius: 0.,
-                    border_width: 0.,
-                    border_color: Color::WHITE,
-                });
-            }
-        }
-
-        // cursor ghost
-        if let Tool::Place(component_id) = self.state.tool {
-            frame.with_save(|frame| {
-                frame.translate(Vector::new(
-                    ((cursor_position.x - 8.) / 16.).round() * 16. - 16.,
-                    ((cursor_position.y - 8.) / 16.).round() * 16. - 24.,
-                ));
-                frame.stroke(&self.component_icons[component_id], default_stroke());
-            });
-        }
-
-        // components
-        for c in self.state.components.iter() {
-            frame.with_save(|frame| {
-                let bounding_rect = c.bounding_rect();
-                frame.translate(Vector::new(bounding_rect.x, bounding_rect.y));
-                frame.stroke(&self.component_icons[c.ty], default_stroke());
-            });
-        }
-
-        if let Some(ref dragging) = self.state.dragging {
-            frame.with_save(|frame| {
-                let bounding_rect = dragging.component.bounding_rect();
-                frame.translate(Vector::new(bounding_rect.x, bounding_rect.y));
-                frame.stroke(&self.component_icons[dragging.component.ty], default_stroke());
-            });
-        }
-
-        primitives.push(frame.into_geometry().into_primitive());
-        let primitive = Primitive::Group { primitives };
-        (primitive, Interaction::Idle)
-    }
-
-    fn hash_layout(&self, state: &mut iced_native::Hasher) {
-        state.write_isize(0)
-    }
-
-    fn on_event(
+impl Widget<CanvasState> for Canvas {
+    fn event(
         &mut self,
-        event: iced_native::Event,
-        _layout: iced_native::Layout<'_>,
-        cursor_position: Point,
-        _renderer: &Renderer<B>,
-        _clipboard: &mut dyn iced_native::Clipboard,
-        messages: &mut Vec<Message>,
-    ) -> Status {
-        use iced_native::event::Event::*;
-        use iced_native::keyboard::Event::*;
-        use iced_native::mouse::Button;
-        use iced_native::mouse::Event::*;
-        match (event, &self.state.tool) {
-            (Mouse(ButtonPressed(Button::Left)), Tool::Hand) => {
-                messages.push(Message::HandToolMouseDown(cursor_position));
-            },
-            (Mouse(ButtonReleased(Button::Left)), Tool::Hand) => {
-                messages.push(Message::HandToolMouseUp(cursor_position));
-            },
-            (Mouse(CursorMoved { position }), Tool::Hand) => {
-                if let Some(ref dragging) = self.state.dragging {
-                    let new_coords = Self::mouse_to_coords(position + dragging.mouse_offset);
-                    if new_coords != (dragging.component.x, dragging.component.y) {
-                        messages.push(Message::Drag(new_coords));
+        ctx: &mut druid::EventCtx,
+        event: &druid::Event,
+        data: &mut CanvasState,
+        _env: &druid::Env,
+    ) {
+        use druid::keyboard_types::Key;
+        use druid::Event::*;
+        match (event, data.tool) {
+            (WindowConnected, _) => ctx.request_focus(),
+            (MouseMove(m), Tool::Hand) => {
+                if let Some(ref mut dragging) = data.dragging {
+                    let new_coords = Self::mouse_to_coords(m.pos + dragging.mouse_offset);
+                    if dragging.component.x != new_coords.0 || dragging.component.y != new_coords.1
+                    {
+                        dragging.component.x = new_coords.0;
+                        dragging.component.y = new_coords.1;
+                        ctx.request_paint();
                     }
                 }
             },
-            (Mouse(ButtonPressed(Button::Left)), Tool::Place(ty)) => {
-                let (x, y) = Self::mouse_to_coords(cursor_position);
-                messages.push(Message::AddComponent((x, y), *ty));
+            (MouseMove(m), Tool::Place(_)) => {
+                let new_coords = Self::mouse_to_coords(m.pos);
+                if data.mouse_pos != Some(new_coords) {
+                    data.mouse_pos = Some(new_coords);
+                    ctx.request_paint();
+                }
             },
-            (Keyboard(CharacterReceived(' ')), _) => messages.push(Message::SwitchTool(Tool::Hand)),
-            (Keyboard(CharacterReceived(c)), _) if c.is_digit(10) => {
-                let n = (c.to_digit(10).unwrap() as usize).wrapping_sub(1);
-                if n < self.component_icons.len() {
-                    messages.push(Message::SwitchTool(Tool::Place(n)));
+            (MouseDown(ev), Tool::Hand) if ev.button == MouseButton::Left => {
+                let mut found = false;
+                // if we iterate backwards then we can find the most recently placed one
+                let mut i = data.components.len() - 1;
+                loop {
+                    if data.components[i].bounding_rect().contains(ev.pos) {
+                        found = true;
+                        break;
+                    }
+                    let (next_i, finished) = i.overflowing_sub(1);
+                    i = next_i;
+                    if finished {
+                        break;
+                    }
+                }
+
+                if found {
+                    let component = data.components.remove(i);
+                    // fun magic number
+                    let difference =
+                        component.bounding_rect().center() - ev.pos + Vec2::new(0., 8.);
+                    let dragging = Dragging {
+                        component,
+                        mouse_offset: difference,
+                    };
+                    data.dragging = Some(dragging);
+                }
+            },
+            (MouseUp(ev), Tool::Hand) if ev.button == MouseButton::Left => {
+                if let Some(dragging) = data.dragging.take() {
+                    data.components.push_back(dragging.component);
+                }
+            },
+            (MouseDown(ev), Tool::Place(n)) if ev.button == MouseButton::Left => match ev.button {
+                druid::MouseButton::Left => {
+                    if let Some((x, y)) = data.mouse_pos {
+                        data.components.push_back(Component::new(x, y, n));
+                    }
+                },
+                _ => {},
+            },
+            (KeyDown(key_event), _) => {
+                let mut new_tool = data.tool;
+                match key_event.key {
+                    Key::Character(ref s) if s == " " => new_tool = Tool::Hand,
+                    // once again foiled by other languages existing
+                    Key::Character(ref s)
+                        if s.len() == 1 && s.chars().next().unwrap().is_digit(10) =>
+                    {
+                        let n = u16::from_str_radix(&s, 10).unwrap().wrapping_sub(1);
+                        if (n as usize) < self.component_icons.len() {
+                            new_tool = Tool::Place(n);
+                        }
+                    },
+                    _ => {},
+                }
+                if data.tool != new_tool {
+                    data.tool = new_tool;
+                    ctx.request_paint();
                 }
             },
             _ => {},
         }
+    }
 
-        Status::Captured
+    fn lifecycle(
+        &mut self,
+        ctx: &mut druid::LifeCycleCtx,
+        event: &druid::LifeCycle,
+        _data: &CanvasState,
+        _env: &druid::Env,
+    ) {
+        use druid::LifeCycle::*;
+        match event {
+            // TODO: doesn't seem to do anything, why??? instead we use WindowConnected event
+            // handler
+            WidgetAdded => ctx.register_for_focus(),
+            _ => {},
+        }
+    }
+
+    fn update(
+        &mut self,
+        _ctx: &mut druid::UpdateCtx,
+        _old_data: &CanvasState,
+        _data: &CanvasState,
+        _env: &druid::Env,
+    ) {
+    }
+
+    fn layout(
+        &mut self,
+        _ctx: &mut druid::LayoutCtx,
+        bc: &druid::BoxConstraints,
+        _data: &CanvasState,
+        _env: &druid::Env,
+    ) -> Size {
+        bc.max()
+    }
+
+    fn paint(&mut self, ctx: &mut druid::PaintCtx, data: &CanvasState, _env: &druid::Env) {
+        let size = ctx.size();
+
+        // dots
+        for x in 0..size.width as usize / 16 {
+            for y in 0..size.height as usize / 16 {
+                ctx.fill(
+                    Rect::from_center_size(
+                        Point::new(x as f64 * 16.0 + 8.0, y as f64 * 16.0 + 8.0),
+                        Size::new(2.0, 2.0),
+                    ),
+                    &Color::GRAY,
+                );
+            }
+        }
+
+        // cursor ghost
+        if let Tool::Place(n) = data.tool {
+            if let Some(pos) = data.mouse_pos {
+                self.component_icons[n as usize].to_piet(
+                    Affine::translate(Vec2::new(
+                        pos.0 as f64 * 16.0 - 16.0,
+                        pos.1 as f64 * 16.0 - 24.0,
+                    )),
+                    ctx,
+                );
+            }
+        }
+
+        // components
+        for c in data.components.iter() {
+            let icon = &self.component_icons[c.ty as usize];
+            icon.to_piet(
+                Affine::translate(Vec2::new(
+                    c.x as f64 * 16.0 - 16.0,
+                    c.y as f64 * 16.0 - 24.0,
+                )),
+                ctx,
+            );
+        }
+
+        // dragging
+        if let Some(ref dragging) = data.dragging {
+            self.component_icons[dragging.component.ty as usize].to_piet(
+                Affine::translate(Vec2::new(
+                    dragging.component.x as f64 * 16.0 - 16.0,
+                    dragging.component.y as f64 * 16.0 - 24.0,
+                )),
+                ctx,
+            );
+        }
     }
 }
