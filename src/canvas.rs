@@ -1,12 +1,12 @@
 use std::{hash::Hasher, rc::Rc};
 
 use iced::{
-    mouse::Interaction, svg::Handle, Background, Color, Length, Point, Rectangle, Size, Vector,
+    mouse::Interaction, Background, Color, Length, Point, Rectangle, Size, Vector,
 };
-use iced_graphics::{Backend, Primitive, Renderer};
+use iced_graphics::{Backend, Primitive, Renderer, canvas::{Frame, Path}};
 use iced_native::{event::Status, layout::Node, Widget};
 
-use super::Message;
+use crate::{Message, components::default_stroke};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Tool {
@@ -57,11 +57,11 @@ impl CanvasState {
 
 pub struct Canvas {
     state: CanvasState,
-    component_icons: Rc<Vec<Handle>>,
+    component_icons: Rc<Vec<Path>>,
 }
 
 impl Canvas {
-    pub fn new(state: CanvasState, component_icons: Rc<Vec<Handle>>) -> Self {
+    pub fn new(state: CanvasState, component_icons: Rc<Vec<Path>>) -> Self {
         Canvas {
             state,
             component_icons,
@@ -106,6 +106,7 @@ where
     ) -> <iced_graphics::Renderer<B> as iced_native::Renderer>::Output {
         let size = layout.bounds().size();
         let mut primitives = Vec::new();
+        let mut frame = Frame::new(size);
 
         // dots
         for x in 0..size.width as usize / 16 {
@@ -126,32 +127,33 @@ where
 
         // cursor ghost
         if let Tool::Place(component_id) = self.state.tool {
-            primitives.push(Primitive::Svg {
-                handle: self.component_icons[component_id].clone(),
-                bounds: Rectangle {
-                    x: ((cursor_position.x - 8.) / 16.).round() * 16. - 16.,
-                    y: ((cursor_position.y - 8.) / 16.).round() * 16. - 24.,
-                    width: 48.,
-                    height: 48.,
-                },
+            frame.with_save(|frame| {
+                frame.translate(Vector::new(
+                    ((cursor_position.x - 8.) / 16.).round() * 16. - 16.,
+                    ((cursor_position.y - 8.) / 16.).round() * 16. - 24.,
+                ));
+                frame.stroke(&self.component_icons[component_id], default_stroke());
             });
         }
 
         // components
         for c in self.state.components.iter() {
-            primitives.push(Primitive::Svg {
-                handle: self.component_icons[c.ty].clone(),
-                bounds: c.bounding_rect(),
+            frame.with_save(|frame| {
+                let bounding_rect = c.bounding_rect();
+                frame.translate(Vector::new(bounding_rect.x, bounding_rect.y));
+                frame.stroke(&self.component_icons[c.ty], default_stroke());
             });
         }
 
         if let Some(ref dragging) = self.state.dragging {
-            primitives.push(Primitive::Svg {
-                handle: self.component_icons[dragging.component.ty].clone(),
-                bounds: dragging.component.bounding_rect(),
+            frame.with_save(|frame| {
+                let bounding_rect = dragging.component.bounding_rect();
+                frame.translate(Vector::new(bounding_rect.x, bounding_rect.y));
+                frame.stroke(&self.component_icons[dragging.component.ty], default_stroke());
             });
         }
 
+        primitives.push(frame.into_geometry().into_primitive());
         let primitive = Primitive::Group { primitives };
         (primitive, Interaction::Idle)
     }

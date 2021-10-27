@@ -1,18 +1,22 @@
 use std::rc::Rc;
 
-use iced::{executor, svg::Handle, Application, Command, Element, Point, Settings, Vector};
+use iced::{executor, Application, Command, Element, Point, Settings, Vector};
+use iced_graphics::canvas::Path;
 
 mod canvas;
+mod components;
 
 use canvas::{Canvas, CanvasState, Component, Dragging};
 
 fn main() -> Result<(), iced::Error> {
-    App::run(Settings::default())
+    let mut settings = Settings::default();
+    settings.antialiasing = true;
+    App::run(settings)
 }
 
 struct App {
     canvas_state: CanvasState,
-    component_icons: Rc<Vec<Handle>>,
+    component_icons: Rc<Vec<Path>>,
 }
 
 #[derive(Debug)]
@@ -34,10 +38,8 @@ impl Application for App {
             App {
                 canvas_state: CanvasState::new(),
                 component_icons: Rc::new(vec![
-                    Handle::from_path("res/not_gate.svg"),
-                    Handle::from_path("res/and_gate.svg"),
-                    Handle::from_path("res/or_gate.svg"),
-                    Handle::from_path("res/nand_gate.svg"),
+                    components::not_gate(),
+                    components::and_gate(),
                 ]),
             },
             Command::none(),
