@@ -102,22 +102,15 @@ impl Widget<CanvasState> for Canvas {
                 }
             },
             (MouseDown(ev), Tool::Hand) if ev.button == MouseButton::Left => {
-                let mut found = false;
                 // if we iterate backwards then we can find the most recently placed one
-                let mut i = data.components.len() - 1;
-                loop {
-                    if data.components[i].bounding_rect().contains(ev.pos) {
-                        found = true;
-                        break;
-                    }
-                    let (next_i, finished) = i.overflowing_sub(1);
-                    i = next_i;
-                    if finished {
-                        break;
-                    }
-                }
-
-                if found {
+                if let Some((i, _)) = data
+                    .components
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .find(|(_, c)| c.bounding_rect().contains(ev.pos))
+                {
+                    ctx.set_active(true);
                     let component = data.components.remove(i);
                     // fun magic number
                     let difference =
