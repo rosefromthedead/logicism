@@ -1,6 +1,6 @@
 use std::{rc::Rc, str::FromStr};
 
-use druid::{widget::SvgData, Data, Rect, Size, Vec2};
+use druid::{Data, Point, Rect, Size, Vec2, widget::SvgData};
 
 use crate::canvas::Canvas;
 
@@ -28,6 +28,8 @@ pub struct ComponentType {
     /// The point that is represented by the coordinates of a component when it is oriented north
     anchor_offset: Vec2,
     pub icon: SvgData,
+    pub input_pins: Vec<Point>,
+    pub output_pins: Vec<Point>,
 }
 
 impl ComponentType {
@@ -36,21 +38,29 @@ impl ComponentType {
             size: Size::new(24.0, 48.0),
             anchor_offset: Vec2::new(12.0, 32.0),
             icon: SvgData::from_str(include_str!("../res/not_gate.svg")).unwrap(),
+            input_pins: vec![Point::new(12.0, 48.0)],
+            output_pins: vec![Point::new(12.0, 0.0)],
         };
         let and_gate = ComponentType {
             size: Size::new(48.0, 48.0),
             anchor_offset: Vec2::new(24.0, 32.0),
             icon: SvgData::from_str(include_str!("../res/and_gate.svg")).unwrap(),
+            input_pins: vec![Point::new(8.0, 48.0), Point::new(40.0, 48.0)],
+            output_pins: vec![Point::new(24.0, 0.0)],
         };
         let or_gate = ComponentType {
             size: Size::new(48.0, 48.0),
             anchor_offset: Vec2::new(24.0, 32.0),
             icon: SvgData::from_str(include_str!("../res/or_gate.svg")).unwrap(),
+            input_pins: vec![Point::new(8.0, 48.0), Point::new(40.0, 48.0)],
+            output_pins: vec![Point::new(24.0, 0.0)],
         };
         let nand_gate = ComponentType {
             size: Size::new(48.0, 48.0),
             anchor_offset: Vec2::new(24.0, 32.0),
             icon: SvgData::from_str(include_str!("../res/nand_gate.svg")).unwrap(),
+            input_pins: vec![Point::new(8.0, 48.0), Point::new(40.0, 48.0)],
+            output_pins: vec![Point::new(24.0, 0.0)],
         };
         vec![
             Rc::new(not_gate),

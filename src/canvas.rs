@@ -6,6 +6,8 @@ use druid::{
 
 use crate::component::{ComponentType, Orientation};
 
+const IDENTITY: Affine = Affine::scale(1.0);
+
 #[derive(Clone, Data)]
 pub enum Tool {
     Hand,
@@ -53,7 +55,7 @@ impl Component {
 
     fn widget_transform(&self) -> Affine {
         let recenter = match self.orientation {
-            Orientation::North => Affine::translate(Vec2::ZERO),
+            Orientation::North => IDENTITY,
             Orientation::East => Affine::translate(Vec2::new(self.ty.size.width, 0.0)),
             Orientation::South => {
                 Affine::translate(Vec2::new(self.ty.size.width, self.ty.size.height))
@@ -288,7 +290,16 @@ impl Widget<CanvasState> for Canvas {
 
         // components
         for c in data.components.iter() {
-            c.ty.icon.to_piet(c.widget_transform(), ctx);
+            ctx.with_save(|ctx| {
+                ctx.transform(c.widget_transform());
+                c.ty.icon.to_piet(IDENTITY, ctx);
+                for pin_pos in c.ty.input_pins.iter() {
+                    ctx.fill(Rect::from_center_size(pin_pos.clone(), Size::new(3.0, 3.0)), &Color::LIME);
+                }
+                for pin_pos in c.ty.output_pins.iter() {
+                    ctx.fill(Rect::from_center_size(pin_pos.clone(), Size::new(3.0, 3.0)), &Color::LIME);
+                }
+            });
         }
 
         // dragging
