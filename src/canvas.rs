@@ -1,31 +1,68 @@
 use std::rc::Rc;
 
 use druid::{
-    im::Vector, widget::SvgData, Affine, Color, Data, MouseButton, Point, Rect, RenderContext,
-    Size, Vec2, Widget,
+    im::Vector, Affine, Color, Data, MouseButton, Point, Rect, RenderContext, Size, Vec2, Widget,
 };
 
-#[derive(Clone, Copy, Data, Debug, PartialEq, Eq)]
+use crate::component::{ComponentType, Orientation};
+
+#[derive(Clone, Data)]
 pub enum Tool {
     Hand,
-    Place(u16),
+    Place(Rc<ComponentType>, Orientation),
 }
+
+impl PartialEq for Tool {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Place(l_ty, l_o), Self::Place(r_ty, r_o)) => {
+                Rc::ptr_eq(l_ty, r_ty) && l_o == r_o
+            },
+            _ => std::mem::discriminant(self) == std::mem::discriminant(other),
+        }
+    }
+}
+
+impl Eq for Tool {}
 
 #[derive(Clone, Data)]
 struct Component {
     x: usize,
     y: usize,
-    ty: u16,
+    ty: Rc<ComponentType>,
+    orientation: Orientation,
 }
 
 impl Component {
-    fn new(x: usize, y: usize, ty: u16) -> Self {
-        Component { x, y, ty }
+    fn new(x: usize, y: usize, ty: Rc<ComponentType>, orientation: Orientation) -> Self {
+        Component {
+            x,
+            y,
+            ty,
+            orientation,
+        }
     }
 
     pub fn bounding_rect(&self) -> Rect {
-        let center = Point::new(self.x as f64 * 16.0, self.y as f64 * 16.0);
-        Rect::from_center_size(center, Size::new(48., 48.))
+        self.ty.bounding_rect(self.x, self.y, self.orientation)
+    }
+
+    pub fn anchor_position(&self) -> Point {
+        Canvas::coords_to_widget_space(self.x, self.y)
+    }
+
+    fn widget_transform(&self) -> Affine {
+        let recenter = match self.orientation {
+            Orientation::North => Affine::translate(Vec2::ZERO),
+            Orientation::East => Affine::translate(Vec2::new(self.ty.size.width, 0.0)),
+            Orientation::South => {
+                Affine::translate(Vec2::new(self.ty.size.width, self.ty.size.height))
+            },
+            Orientation::West => Affine::translate(Vec2::new(0.0, self.ty.size.height)),
+        };
+        Affine::translate(self.bounding_rect().origin() - Point::ORIGIN)
+            * recenter
+            * Affine::rotate(self.orientation.angle())
     }
 }
 
@@ -41,6 +78,7 @@ pub struct CanvasState {
     tool: Tool,
     dragging: Option<Dragging>,
     mouse_pos: Option<(usize, usize)>,
+    last_orientation: Orientation,
 }
 
 impl CanvasState {
@@ -50,24 +88,29 @@ impl CanvasState {
             tool: Tool::Hand,
             dragging: None,
             mouse_pos: None,
+            last_orientation: Orientation::North,
         }
     }
 }
 
 pub struct Canvas {
-    component_icons: Rc<Vec<SvgData>>,
+    component_types: Rc<Vec<Rc<ComponentType>>>,
 }
 
 impl Canvas {
-    pub fn new(component_icons: Rc<Vec<SvgData>>) -> Self {
-        Canvas { component_icons }
+    pub fn new(component_types: Rc<Vec<Rc<ComponentType>>>) -> Self {
+        Canvas { component_types }
     }
 
-    pub fn mouse_to_coords(mouse_pos: Point) -> (usize, usize) {
+    pub fn widget_space_to_coords(pos: Point) -> (usize, usize) {
         (
-            ((mouse_pos.x - 8.) / 16.).round() as usize,
-            ((mouse_pos.y - 8.) / 16.).round() as usize,
+            ((pos.x - 8.) / 16.).round() as usize,
+            ((pos.y - 8.) / 16.).round() as usize,
         )
+    }
+
+    pub fn coords_to_widget_space(x: usize, y: usize) -> Point {
+        Point::new((x * 16 + 8) as f64, (y * 16 + 8) as f64)
     }
 }
 
@@ -81,21 +124,26 @@ impl Widget<CanvasState> for Canvas {
     ) {
         use druid::keyboard_types::Key;
         use druid::Event::*;
-        match (event, data.tool) {
+        match (event, &mut data.tool) {
             (WindowConnected, _) => ctx.request_focus(),
             (MouseMove(m), Tool::Hand) => {
+                let new_coords = Self::widget_space_to_coords(m.pos);
+                if data.mouse_pos != Some(new_coords) {
+                    data.mouse_pos = Some(new_coords);
+                }
+
                 if let Some(ref mut dragging) = data.dragging {
-                    let new_coords = Self::mouse_to_coords(m.pos + dragging.mouse_offset);
-                    if dragging.component.x != new_coords.0 || dragging.component.y != new_coords.1
-                    {
-                        dragging.component.x = new_coords.0;
-                        dragging.component.y = new_coords.1;
+                    let c = &mut dragging.component;
+                    let new_coords = Self::widget_space_to_coords(m.pos - dragging.mouse_offset);
+                    if c.x != new_coords.0 || c.y != new_coords.1 {
+                        c.x = new_coords.0;
+                        c.y = new_coords.1;
                         ctx.request_paint();
                     }
                 }
             },
-            (MouseMove(m), Tool::Place(_)) => {
-                let new_coords = Self::mouse_to_coords(m.pos);
+            (MouseMove(m), Tool::Place(_, _)) => {
+                let new_coords = Self::widget_space_to_coords(m.pos);
                 if data.mouse_pos != Some(new_coords) {
                     data.mouse_pos = Some(new_coords);
                     ctx.request_paint();
@@ -112,9 +160,7 @@ impl Widget<CanvasState> for Canvas {
                 {
                     ctx.set_active(true);
                     let component = data.components.remove(i);
-                    // fun magic number
-                    let difference =
-                        component.bounding_rect().center() - ev.pos + Vec2::new(0., 8.);
+                    let difference = ev.pos - component.anchor_position();
                     let dragging = Dragging {
                         component,
                         mouse_offset: difference,
@@ -127,31 +173,53 @@ impl Widget<CanvasState> for Canvas {
                     data.components.push_back(dragging.component);
                 }
             },
-            (MouseDown(ev), Tool::Place(n)) if ev.button == MouseButton::Left => match ev.button {
-                druid::MouseButton::Left => {
-                    if let Some((x, y)) = data.mouse_pos {
-                        data.components.push_back(Component::new(x, y, n));
-                    }
-                },
-                _ => {},
-            },
-            (KeyDown(key_event), _) => {
-                let mut new_tool = data.tool;
-                match key_event.key {
-                    Key::Character(ref s) if s == " " => new_tool = Tool::Hand,
-                    // once again foiled by other languages existing
-                    Key::Character(ref s)
-                        if s.len() == 1 && s.chars().next().unwrap().is_digit(10) =>
-                    {
-                        let n = u16::from_str_radix(&s, 10).unwrap().wrapping_sub(1);
-                        if (n as usize) < self.component_icons.len() {
-                            new_tool = Tool::Place(n);
+            (MouseDown(ev), Tool::Place(ty, orientation)) if ev.button == MouseButton::Left => {
+                match ev.button {
+                    druid::MouseButton::Left => {
+                        if let Some((x, y)) = data.mouse_pos {
+                            data.components.push_back(Component::new(
+                                x,
+                                y,
+                                Rc::clone(&ty),
+                                *orientation,
+                            ));
                         }
                     },
                     _ => {},
                 }
-                if data.tool != new_tool {
-                    data.tool = new_tool;
+            },
+            (KeyDown(key_event), tool) => {
+                let mut new_tool = tool.clone();
+                match (&key_event.key, &tool) {
+                    (Key::Character(ref s), _) if s == " " => new_tool = Tool::Hand,
+                    // once again foiled by other languages existing
+                    (Key::Character(ref s), _)
+                        if s.len() == 1 && s.chars().next().unwrap().is_digit(10) =>
+                    {
+                        let n = u16::from_str_radix(&s, 10).unwrap().wrapping_sub(1) as usize;
+                        if n < self.component_types.len() {
+                            new_tool = Tool::Place(
+                                Rc::clone(&self.component_types[n]),
+                                data.last_orientation,
+                            );
+                        }
+                    },
+                    (Key::Character(ref s), &&mut Tool::Place(ref ty, _)) if s == "w" => {
+                        new_tool = Tool::Place(Rc::clone(&ty), Orientation::North)
+                    },
+                    (Key::Character(ref s), &&mut Tool::Place(ref ty, _)) if s == "a" => {
+                        new_tool = Tool::Place(Rc::clone(&ty), Orientation::West)
+                    },
+                    (Key::Character(ref s), &&mut Tool::Place(ref ty, _)) if s == "s" => {
+                        new_tool = Tool::Place(Rc::clone(&ty), Orientation::South)
+                    },
+                    (Key::Character(ref s), &&mut Tool::Place(ref ty, _)) if s == "d" => {
+                        new_tool = Tool::Place(Rc::clone(&ty), Orientation::East)
+                    },
+                    _ => {},
+                }
+                if *tool != new_tool {
+                    *tool = new_tool;
                     ctx.request_paint();
                 }
             },
@@ -211,39 +279,25 @@ impl Widget<CanvasState> for Canvas {
         }
 
         // cursor ghost
-        if let Tool::Place(n) = data.tool {
-            if let Some(pos) = data.mouse_pos {
-                self.component_icons[n as usize].to_piet(
-                    Affine::translate(Vec2::new(
-                        pos.0 as f64 * 16.0 - 16.0,
-                        pos.1 as f64 * 16.0 - 24.0,
-                    )),
-                    ctx,
-                );
+        if let Tool::Place(ref ty, orientation) = data.tool {
+            if let Some((x, y)) = data.mouse_pos {
+                let component = Component::new(x, y, Rc::clone(&ty), orientation);
+                component.ty.icon.to_piet(component.widget_transform(), ctx);
             }
         }
 
         // components
         for c in data.components.iter() {
-            let icon = &self.component_icons[c.ty as usize];
-            icon.to_piet(
-                Affine::translate(Vec2::new(
-                    c.x as f64 * 16.0 - 16.0,
-                    c.y as f64 * 16.0 - 24.0,
-                )),
-                ctx,
-            );
+            c.ty.icon.to_piet(c.widget_transform(), ctx);
         }
 
         // dragging
         if let Some(ref dragging) = data.dragging {
-            self.component_icons[dragging.component.ty as usize].to_piet(
-                Affine::translate(Vec2::new(
-                    dragging.component.x as f64 * 16.0 - 16.0,
-                    dragging.component.y as f64 * 16.0 - 24.0,
-                )),
-                ctx,
-            );
+            dragging
+                .component
+                .ty
+                .icon
+                .to_piet(dragging.component.widget_transform(), ctx);
         }
     }
 }
