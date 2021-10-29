@@ -1,12 +1,14 @@
 use std::rc::Rc;
 
 use component::ComponentType;
-use druid::{AppLauncher, Widget, WindowDesc};
+use druid::{Affine, AppLauncher, Widget, WindowDesc};
 
 mod canvas;
 mod component;
 
 use canvas::{Canvas, CanvasState};
+
+const IDENTITY: Affine = Affine::scale(1.0);
 
 fn main() {
     let component_types = Rc::new(ComponentType::enumerate());

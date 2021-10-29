@@ -1,8 +1,14 @@
 use std::{rc::Rc, str::FromStr};
 
-use druid::{Data, Point, Rect, Size, Vec2, widget::SvgData};
+use druid::{
+    kurbo::RoundedRect, widget::SvgData, Affine, Color, Data, Event, PaintCtx, Point, Rect,
+    RenderContext, Size, Vec2, Widget,
+};
 
-use crate::canvas::Canvas;
+use crate::{
+    canvas::{Canvas, DESELECT_ALL},
+    IDENTITY,
+};
 
 #[derive(Clone, Copy, Data, PartialEq, Eq)]
 pub enum Orientation {
@@ -87,5 +93,164 @@ impl ComponentType {
             Orientation::East | Orientation::West => Size::new(self.size.height, self.size.width),
         };
         Rect::from_origin_size(top_left, size)
+    }
+}
+
+#[derive(Clone, Data)]
+pub struct ComponentInstance {
+    x: usize,
+    y: usize,
+    ty: Rc<ComponentType>,
+    orientation: Orientation,
+}
+
+impl ComponentInstance {
+    pub fn new(x: usize, y: usize, ty: Rc<ComponentType>, orientation: Orientation) -> Self {
+        ComponentInstance {
+            x,
+            y,
+            ty,
+            orientation,
+        }
+    }
+
+    pub fn bounding_rect(&self) -> Rect {
+        self.ty.bounding_rect(self.x, self.y, self.orientation)
+    }
+
+    pub fn paint(&self, ctx: &mut PaintCtx) {
+        let recenter = match self.orientation {
+            Orientation::North => IDENTITY,
+            Orientation::East => Affine::translate(Vec2::new(self.ty.size.height, 0.0)),
+            Orientation::South => {
+                Affine::translate(Vec2::new(self.ty.size.width, self.ty.size.height))
+            },
+            Orientation::West => Affine::translate(Vec2::new(0.0, self.ty.size.height)),
+        };
+
+        ctx.with_save(|ctx| {
+            ctx.transform(recenter * Affine::rotate(self.orientation.angle()));
+            self.ty.icon.to_piet(IDENTITY, ctx);
+            for pin_pos in self.ty.input_pins.iter().chain(self.ty.output_pins.iter()) {
+                ctx.fill(
+                    Rect::from_center_size(*pin_pos, Size::new(2.0, 2.0)),
+                    &Color::GREEN,
+                );
+            }
+        });
+    }
+
+    fn anchor_offset(&self) -> Vec2 {
+        self.ty.anchor_offset(self.orientation)
+    }
+}
+
+#[derive(Clone, Data)]
+pub struct ComponentState {
+    pub instance: ComponentInstance,
+    selected: bool,
+    dragging: Option<Vec2>,
+}
+
+impl ComponentState {
+    pub fn new(x: usize, y: usize, ty: Rc<ComponentType>, orientation: Orientation) -> Self {
+        ComponentState {
+            instance: ComponentInstance::new(x, y, ty, orientation),
+            selected: false,
+            dragging: None,
+        }
+    }
+}
+
+pub struct Component;
+
+impl Widget<ComponentState> for Component {
+    fn event(
+        &mut self,
+        ctx: &mut druid::EventCtx,
+        event: &druid::Event,
+        data: &mut ComponentState,
+        _env: &druid::Env,
+    ) {
+        match event {
+            Event::MouseDown(ev) => {
+                if !data.selected {
+                    data.selected = true;
+                    ctx.request_paint();
+                }
+                data.dragging = Some(
+                    ev.window_pos
+                        - data.instance.anchor_offset()
+                        - data.instance.bounding_rect().origin(),
+                );
+                ctx.set_active(true);
+
+                if !ev.mods.ctrl() {
+                    ctx.submit_command(DESELECT_ALL.with(ctx.widget_id()));
+                }
+            },
+            Event::MouseUp(_) => {
+                data.dragging = None;
+            },
+            Event::MouseMove(ev) => {
+                if let Some(mouse_offset) = data.dragging {
+                    let new_coords = Canvas::widget_space_to_coords(ev.window_pos - mouse_offset);
+                    if data.instance.x != new_coords.0 || data.instance.y != new_coords.1 {
+                        data.instance.x = new_coords.0;
+                        data.instance.y = new_coords.1;
+                    }
+                }
+            },
+            Event::Command(c) if c.is(DESELECT_ALL) => {
+                let widget_id = c.get(DESELECT_ALL).unwrap();
+                if *widget_id != ctx.widget_id() {
+                    data.selected = false;
+                    ctx.request_paint();
+                }
+            },
+            _ => {},
+        }
+    }
+
+    fn lifecycle(
+        &mut self,
+        _ctx: &mut druid::LifeCycleCtx,
+        _event: &druid::LifeCycle,
+        _data: &ComponentState,
+        _env: &druid::Env,
+    ) {
+    }
+
+    fn update(
+        &mut self,
+        _ctx: &mut druid::UpdateCtx,
+        _old_data: &ComponentState,
+        _data: &ComponentState,
+        _env: &druid::Env,
+    ) {
+    }
+
+    fn layout(
+        &mut self,
+        _ctx: &mut druid::LayoutCtx,
+        bc: &druid::BoxConstraints,
+        data: &ComponentState,
+        _env: &druid::Env,
+    ) -> Size {
+        bc.constrain(data.instance.ty.size)
+    }
+
+    fn paint(&mut self, ctx: &mut druid::PaintCtx, data: &ComponentState, _env: &druid::Env) {
+        data.instance.paint(ctx);
+        if data.selected {
+            // we're painting in widget space already so the bounding rect needs to be translated
+            // back
+            let selection_rect = data.instance.bounding_rect().with_origin(Point::ORIGIN);
+            ctx.stroke(
+                RoundedRect::from_rect(selection_rect, 2.0),
+                &Color::AQUA,
+                2.0,
+            );
+        }
     }
 }

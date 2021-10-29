@@ -1,12 +1,13 @@
 use std::rc::Rc;
 
 use druid::{
-    im::Vector, Affine, Color, Data, MouseButton, Point, Rect, RenderContext, Size, Vec2, Widget,
+    im::Vector, Affine, Color, Data, MouseButton, Point, Rect, RenderContext, Selector, Size, Vec2,
+    Widget, WidgetId, WidgetPod,
 };
 
-use crate::component::{ComponentType, Orientation};
+use crate::component::{Component, ComponentInstance, ComponentState, ComponentType, Orientation};
 
-const IDENTITY: Affine = Affine::scale(1.0);
+pub const DESELECT_ALL: Selector<WidgetId> = Selector::new("logicism/deselect-all");
 
 #[derive(Clone, Data)]
 pub enum Tool {
@@ -14,71 +15,16 @@ pub enum Tool {
     Place(Rc<ComponentType>, Orientation),
 }
 
-impl PartialEq for Tool {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Place(l_ty, l_o), Self::Place(r_ty, r_o)) => {
-                Rc::ptr_eq(l_ty, r_ty) && l_o == r_o
-            },
-            _ => std::mem::discriminant(self) == std::mem::discriminant(other),
-        }
-    }
-}
-
-impl Eq for Tool {}
-
-#[derive(Clone, Data)]
-struct Component {
-    x: usize,
-    y: usize,
-    ty: Rc<ComponentType>,
-    orientation: Orientation,
-}
-
-impl Component {
-    fn new(x: usize, y: usize, ty: Rc<ComponentType>, orientation: Orientation) -> Self {
-        Component {
-            x,
-            y,
-            ty,
-            orientation,
-        }
-    }
-
-    pub fn bounding_rect(&self) -> Rect {
-        self.ty.bounding_rect(self.x, self.y, self.orientation)
-    }
-
-    pub fn anchor_position(&self) -> Point {
-        Canvas::coords_to_widget_space(self.x, self.y)
-    }
-
-    fn widget_transform(&self) -> Affine {
-        let recenter = match self.orientation {
-            Orientation::North => IDENTITY,
-            Orientation::East => Affine::translate(Vec2::new(self.ty.size.width, 0.0)),
-            Orientation::South => {
-                Affine::translate(Vec2::new(self.ty.size.width, self.ty.size.height))
-            },
-            Orientation::West => Affine::translate(Vec2::new(0.0, self.ty.size.height)),
-        };
-        Affine::translate(self.bounding_rect().origin() - Point::ORIGIN)
-            * recenter
-            * Affine::rotate(self.orientation.angle())
-    }
-}
-
 #[derive(Clone, Data)]
 struct Dragging {
-    pub component: Component,
+    pub component: ComponentState,
     pub mouse_offset: Vec2,
 }
 
 #[derive(Clone, Data)]
 pub struct CanvasState {
-    components: Vector<Component>,
+    components: Vector<ComponentState>,
     tool: Tool,
-    dragging: Option<Dragging>,
     mouse_pos: Option<(usize, usize)>,
     last_orientation: Orientation,
 }
@@ -88,7 +34,6 @@ impl CanvasState {
         CanvasState {
             components: Vector::new(),
             tool: Tool::Hand,
-            dragging: None,
             mouse_pos: None,
             last_orientation: Orientation::North,
         }
@@ -97,11 +42,15 @@ impl CanvasState {
 
 pub struct Canvas {
     component_types: Rc<Vec<Rc<ComponentType>>>,
+    component_widgets: Vec<WidgetPod<ComponentState, Component>>,
 }
 
 impl Canvas {
     pub fn new(component_types: Rc<Vec<Rc<ComponentType>>>) -> Self {
-        Canvas { component_types }
+        Canvas {
+            component_types,
+            component_widgets: Vec::new(),
+        }
     }
 
     pub fn widget_space_to_coords(pos: Point) -> (usize, usize) {
@@ -122,74 +71,12 @@ impl Widget<CanvasState> for Canvas {
         ctx: &mut druid::EventCtx,
         event: &druid::Event,
         data: &mut CanvasState,
-        _env: &druid::Env,
+        env: &druid::Env,
     ) {
         use druid::keyboard_types::Key;
         use druid::Event::*;
         match (event, &mut data.tool) {
             (WindowConnected, _) => ctx.request_focus(),
-            (MouseMove(m), Tool::Hand) => {
-                let new_coords = Self::widget_space_to_coords(m.pos);
-                if data.mouse_pos != Some(new_coords) {
-                    data.mouse_pos = Some(new_coords);
-                }
-
-                if let Some(ref mut dragging) = data.dragging {
-                    let c = &mut dragging.component;
-                    let new_coords = Self::widget_space_to_coords(m.pos - dragging.mouse_offset);
-                    if c.x != new_coords.0 || c.y != new_coords.1 {
-                        c.x = new_coords.0;
-                        c.y = new_coords.1;
-                        ctx.request_paint();
-                    }
-                }
-            },
-            (MouseMove(m), Tool::Place(_, _)) => {
-                let new_coords = Self::widget_space_to_coords(m.pos);
-                if data.mouse_pos != Some(new_coords) {
-                    data.mouse_pos = Some(new_coords);
-                    ctx.request_paint();
-                }
-            },
-            (MouseDown(ev), Tool::Hand) if ev.button == MouseButton::Left => {
-                // if we iterate backwards then we can find the most recently placed one
-                if let Some((i, _)) = data
-                    .components
-                    .iter()
-                    .enumerate()
-                    .rev()
-                    .find(|(_, c)| c.bounding_rect().contains(ev.pos))
-                {
-                    ctx.set_active(true);
-                    let component = data.components.remove(i);
-                    let difference = ev.pos - component.anchor_position();
-                    let dragging = Dragging {
-                        component,
-                        mouse_offset: difference,
-                    };
-                    data.dragging = Some(dragging);
-                }
-            },
-            (MouseUp(ev), Tool::Hand) if ev.button == MouseButton::Left => {
-                if let Some(dragging) = data.dragging.take() {
-                    data.components.push_back(dragging.component);
-                }
-            },
-            (MouseDown(ev), Tool::Place(ty, orientation)) if ev.button == MouseButton::Left => {
-                match ev.button {
-                    druid::MouseButton::Left => {
-                        if let Some((x, y)) = data.mouse_pos {
-                            data.components.push_back(Component::new(
-                                x,
-                                y,
-                                Rc::clone(&ty),
-                                *orientation,
-                            ));
-                        }
-                    },
-                    _ => {},
-                }
-            },
             (KeyDown(key_event), tool) => {
                 let mut new_tool = tool.clone();
                 match (&key_event.key, &tool) {
@@ -220,12 +107,42 @@ impl Widget<CanvasState> for Canvas {
                     },
                     _ => {},
                 }
-                if *tool != new_tool {
+                if !Data::same(tool, &new_tool) {
                     *tool = new_tool;
                     ctx.request_paint();
                 }
             },
+            (MouseMove(m), Tool::Hand) => {
+                let new_coords = Self::widget_space_to_coords(m.pos);
+                if data.mouse_pos != Some(new_coords) {
+                    data.mouse_pos = Some(new_coords);
+                }
+            },
+            (MouseMove(m), Tool::Place(_, _)) => {
+                let new_coords = Self::widget_space_to_coords(m.pos);
+                if data.mouse_pos != Some(new_coords) {
+                    data.mouse_pos = Some(new_coords);
+                    ctx.request_paint();
+                }
+            },
+            (MouseDown(ev), Tool::Place(ty, orientation)) if ev.button == MouseButton::Left => {
+                let (x, y) = Canvas::widget_space_to_coords(ev.pos);
+                data.components
+                    .push_back(ComponentState::new(x, y, Rc::clone(&ty), *orientation));
+                self.component_widgets.push(WidgetPod::new(Component));
+                ctx.children_changed();
+                // if we don't return, then we end up passing an event to an uninit widget
+                return;
+            },
             _ => {},
+        }
+
+        for (widget, state) in self
+            .component_widgets
+            .iter_mut()
+            .zip(data.components.iter_mut())
+        {
+            widget.event(ctx, event, state, env);
         }
     }
 
@@ -233,8 +150,8 @@ impl Widget<CanvasState> for Canvas {
         &mut self,
         ctx: &mut druid::LifeCycleCtx,
         event: &druid::LifeCycle,
-        _data: &CanvasState,
-        _env: &druid::Env,
+        data: &CanvasState,
+        env: &druid::Env,
     ) {
         use druid::LifeCycle::*;
         match event {
@@ -243,28 +160,55 @@ impl Widget<CanvasState> for Canvas {
             WidgetAdded => ctx.register_for_focus(),
             _ => {},
         }
+
+        for (widget, state) in self
+            .component_widgets
+            .iter_mut()
+            .zip(data.components.iter())
+        {
+            widget.lifecycle(ctx, event, state, env);
+        }
     }
 
     fn update(
         &mut self,
-        _ctx: &mut druid::UpdateCtx,
-        _old_data: &CanvasState,
-        _data: &CanvasState,
-        _env: &druid::Env,
+        ctx: &mut druid::UpdateCtx,
+        old_data: &CanvasState,
+        data: &CanvasState,
+        env: &druid::Env,
     ) {
+        for (widget, (new, old)) in self
+            .component_widgets
+            .iter_mut()
+            .zip(data.components.iter().zip(old_data.components.iter()))
+        {
+            widget.update(ctx, new, env);
+            if !Data::same(&new.instance, &old.instance) {
+                ctx.request_layout();
+            }
+        }
     }
 
     fn layout(
         &mut self,
-        _ctx: &mut druid::LayoutCtx,
+        ctx: &mut druid::LayoutCtx,
         bc: &druid::BoxConstraints,
-        _data: &CanvasState,
-        _env: &druid::Env,
+        data: &CanvasState,
+        env: &druid::Env,
     ) -> Size {
+        for (widget, data) in self
+            .component_widgets
+            .iter_mut()
+            .zip(data.components.iter())
+        {
+            widget.set_origin(ctx, data, env, data.instance.bounding_rect().origin());
+            widget.layout(ctx, bc, data, env);
+        }
+
         bc.max()
     }
 
-    fn paint(&mut self, ctx: &mut druid::PaintCtx, data: &CanvasState, _env: &druid::Env) {
+    fn paint(&mut self, ctx: &mut druid::PaintCtx, data: &CanvasState, env: &druid::Env) {
         let size = ctx.size();
 
         // dots
@@ -283,32 +227,23 @@ impl Widget<CanvasState> for Canvas {
         // cursor ghost
         if let Tool::Place(ref ty, orientation) = data.tool {
             if let Some((x, y)) = data.mouse_pos {
-                let component = Component::new(x, y, Rc::clone(&ty), orientation);
-                component.ty.icon.to_piet(component.widget_transform(), ctx);
+                let component = ComponentInstance::new(x, y, Rc::clone(&ty), orientation);
+                ctx.with_save(|ctx| {
+                    ctx.transform(Affine::translate(
+                        component.bounding_rect().origin() - Point::ORIGIN,
+                    ));
+                    component.paint(ctx);
+                });
             }
         }
 
         // components
-        for c in data.components.iter() {
-            ctx.with_save(|ctx| {
-                ctx.transform(c.widget_transform());
-                c.ty.icon.to_piet(IDENTITY, ctx);
-                for pin_pos in c.ty.input_pins.iter() {
-                    ctx.fill(Rect::from_center_size(pin_pos.clone(), Size::new(3.0, 3.0)), &Color::LIME);
-                }
-                for pin_pos in c.ty.output_pins.iter() {
-                    ctx.fill(Rect::from_center_size(pin_pos.clone(), Size::new(3.0, 3.0)), &Color::LIME);
-                }
-            });
-        }
-
-        // dragging
-        if let Some(ref dragging) = data.dragging {
-            dragging
-                .component
-                .ty
-                .icon
-                .to_piet(dragging.component.widget_transform(), ctx);
+        for (widget, state) in self
+            .component_widgets
+            .iter_mut()
+            .zip(data.components.iter())
+        {
+            widget.paint(ctx, state, env);
         }
     }
 }
