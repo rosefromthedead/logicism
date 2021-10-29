@@ -1,14 +1,8 @@
 use std::{rc::Rc, str::FromStr};
 
-use druid::{
-    kurbo::RoundedRect, widget::SvgData, Affine, Color, Data, Event, PaintCtx, Point, Rect,
-    RenderContext, Size, Vec2, Widget,
-};
+use druid::{Affine, Color, Data, Event, Insets, PaintCtx, Point, Rect, RenderContext, Size, Vec2, Widget, kurbo::RoundedRect, widget::SvgData};
 
-use crate::{
-    canvas::{Canvas, DESELECT_ALL},
-    IDENTITY,
-};
+use crate::{IDENTITY, canvas::{BEGIN_DRAG, Canvas, DESELECT_ALL}};
 
 #[derive(Clone, Copy, Data, PartialEq, Eq)]
 pub enum Orientation {
@@ -177,20 +171,18 @@ impl Widget<ComponentState> for Component {
                 if !data.selected {
                     data.selected = true;
                     ctx.request_paint();
+                    if !ev.mods.ctrl() {
+                        ctx.submit_command(DESELECT_ALL.with(ctx.widget_id()));
+                    }
                 }
-                data.dragging = Some(
-                    ev.window_pos
-                        - data.instance.anchor_offset()
-                        - data.instance.bounding_rect().origin(),
-                );
-                ctx.set_active(true);
 
-                if !ev.mods.ctrl() {
-                    ctx.submit_command(DESELECT_ALL.with(ctx.widget_id()));
-                }
+                ctx.submit_command(BEGIN_DRAG.with(ev.window_pos));
+                ctx.request_focus();
+                ctx.set_handled();
             },
             Event::MouseUp(_) => {
                 data.dragging = None;
+                ctx.set_active(false);
             },
             Event::MouseMove(ev) => {
                 if let Some(mouse_offset) = data.dragging {
@@ -201,12 +193,37 @@ impl Widget<ComponentState> for Component {
                     }
                 }
             },
+            Event::KeyDown(ev) => {
+                use druid::keyboard_types::Key;
+                let mut orientation = data.instance.orientation;
+                match ev.key {
+                    Key::Character(ref s) if s == "w" => orientation = Orientation::North,
+                    Key::Character(ref s) if s == "a" => orientation = Orientation::West,
+                    Key::Character(ref s) if s == "s" => orientation = Orientation::South,
+                    Key::Character(ref s) if s == "d" => orientation = Orientation::East,
+                    _ => {},
+                }
+                if orientation != data.instance.orientation {
+                    data.instance.orientation = orientation;
+                    ctx.request_paint();
+                }
+            },
             Event::Command(c) if c.is(DESELECT_ALL) => {
                 let widget_id = c.get(DESELECT_ALL).unwrap();
                 if *widget_id != ctx.widget_id() {
                     data.selected = false;
+                    ctx.set_active(false);
                     ctx.request_paint();
                 }
+            },
+            Event::Command(c) if c.is(BEGIN_DRAG) && data.selected => {
+                let window_pos = c.get(BEGIN_DRAG).unwrap();
+                data.dragging = Some(
+                    *window_pos
+                        - data.instance.anchor_offset()
+                        - data.instance.bounding_rect().origin(),
+                );
+                ctx.set_active(true);
             },
             _ => {},
         }
@@ -232,11 +249,12 @@ impl Widget<ComponentState> for Component {
 
     fn layout(
         &mut self,
-        _ctx: &mut druid::LayoutCtx,
+        ctx: &mut druid::LayoutCtx,
         bc: &druid::BoxConstraints,
         data: &ComponentState,
         _env: &druid::Env,
     ) -> Size {
+        ctx.set_paint_insets(Insets::uniform(8.0));
         bc.constrain(data.instance.ty.size)
     }
 
@@ -245,11 +263,11 @@ impl Widget<ComponentState> for Component {
         if data.selected {
             // we're painting in widget space already so the bounding rect needs to be translated
             // back
-            let selection_rect = data.instance.bounding_rect().with_origin(Point::ORIGIN);
+            let selection_rect = data.instance.bounding_rect().with_origin(Point::ORIGIN).inflate(4.0, 4.0);
             ctx.stroke(
-                RoundedRect::from_rect(selection_rect, 2.0),
+                RoundedRect::from_rect(selection_rect, 4.0),
                 &Color::AQUA,
-                2.0,
+                1.0,
             );
         }
     }

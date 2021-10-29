@@ -1,12 +1,10 @@
 use std::rc::Rc;
 
-use druid::{
-    im::Vector, Affine, Color, Data, MouseButton, Point, Rect, RenderContext, Selector, Size, Vec2,
-    Widget, WidgetId, WidgetPod,
-};
+use druid::{Affine, BoxConstraints, Color, Data, MouseButton, Point, Rect, RenderContext, Selector, Size, Vec2, Widget, WidgetId, WidgetPod, im::Vector};
 
 use crate::component::{Component, ComponentInstance, ComponentState, ComponentType, Orientation};
 
+pub const BEGIN_DRAG: Selector<Point> = Selector::new("logicism/begin-drag");
 pub const DESELECT_ALL: Selector<WidgetId> = Selector::new("logicism/deselect-all");
 
 #[derive(Clone, Data)]
@@ -73,13 +71,21 @@ impl Widget<CanvasState> for Canvas {
         data: &mut CanvasState,
         env: &druid::Env,
     ) {
+        for (widget, state) in self
+            .component_widgets
+            .iter_mut()
+            .zip(data.components.iter_mut())
+        {
+            widget.event(ctx, event, state, env);
+        }
+
         use druid::keyboard_types::Key;
         use druid::Event::*;
         match (event, &mut data.tool) {
             (WindowConnected, _) => ctx.request_focus(),
             (KeyDown(key_event), tool) => {
                 let mut new_tool = tool.clone();
-                match (&key_event.key, &tool) {
+                match (&key_event.key, &*tool) {
                     (Key::Character(ref s), _) if s == " " => new_tool = Tool::Hand,
                     // once again foiled by other languages existing
                     (Key::Character(ref s), _)
@@ -93,16 +99,16 @@ impl Widget<CanvasState> for Canvas {
                             );
                         }
                     },
-                    (Key::Character(ref s), &&mut Tool::Place(ref ty, _)) if s == "w" => {
+                    (Key::Character(ref s), &Tool::Place(ref ty, _)) if s == "w" => {
                         new_tool = Tool::Place(Rc::clone(&ty), Orientation::North)
                     },
-                    (Key::Character(ref s), &&mut Tool::Place(ref ty, _)) if s == "a" => {
+                    (Key::Character(ref s), &Tool::Place(ref ty, _)) if s == "a" => {
                         new_tool = Tool::Place(Rc::clone(&ty), Orientation::West)
                     },
-                    (Key::Character(ref s), &&mut Tool::Place(ref ty, _)) if s == "s" => {
+                    (Key::Character(ref s), &Tool::Place(ref ty, _)) if s == "s" => {
                         new_tool = Tool::Place(Rc::clone(&ty), Orientation::South)
                     },
-                    (Key::Character(ref s), &&mut Tool::Place(ref ty, _)) if s == "d" => {
+                    (Key::Character(ref s), &Tool::Place(ref ty, _)) if s == "d" => {
                         new_tool = Tool::Place(Rc::clone(&ty), Orientation::East)
                     },
                     _ => {},
@@ -125,6 +131,9 @@ impl Widget<CanvasState> for Canvas {
                     ctx.request_paint();
                 }
             },
+            (MouseDown(ev), Tool::Hand) if ev.button == MouseButton::Left && !ctx.is_handled() => {
+                ctx.submit_command(DESELECT_ALL.with(ctx.widget_id()));
+            },
             (MouseDown(ev), Tool::Place(ty, orientation)) if ev.button == MouseButton::Left => {
                 let (x, y) = Canvas::widget_space_to_coords(ev.pos);
                 data.components
@@ -135,14 +144,6 @@ impl Widget<CanvasState> for Canvas {
                 return;
             },
             _ => {},
-        }
-
-        for (widget, state) in self
-            .component_widgets
-            .iter_mut()
-            .zip(data.components.iter_mut())
-        {
-            widget.event(ctx, event, state, env);
         }
     }
 
@@ -192,7 +193,7 @@ impl Widget<CanvasState> for Canvas {
     fn layout(
         &mut self,
         ctx: &mut druid::LayoutCtx,
-        bc: &druid::BoxConstraints,
+        bc: &BoxConstraints,
         data: &CanvasState,
         env: &druid::Env,
     ) -> Size {
@@ -202,7 +203,7 @@ impl Widget<CanvasState> for Canvas {
             .zip(data.components.iter())
         {
             widget.set_origin(ctx, data, env, data.instance.bounding_rect().origin());
-            widget.layout(ctx, bc, data, env);
+            widget.layout(ctx, &BoxConstraints::UNBOUNDED, data, env);
         }
 
         bc.max()
