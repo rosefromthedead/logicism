@@ -1,11 +1,48 @@
 use std::rc::Rc;
 
-use druid::{Affine, BoxConstraints, Color, Data, MouseButton, Point, Rect, RenderContext, Selector, Size, Vec2, Widget, WidgetId, WidgetPod, im::Vector};
+use druid::{
+    im::Vector, Affine, BoxConstraints, Color, Data, MouseButton, Point, Rect, RenderContext,
+    Selector, Size, Vec2, Widget, WidgetId, WidgetPod,
+};
 
 use crate::component::{Component, ComponentInstance, ComponentState, ComponentType, Orientation};
 
 pub const BEGIN_DRAG: Selector<Point> = Selector::new("logicism/begin-drag");
 pub const DESELECT_ALL: Selector<WidgetId> = Selector::new("logicism/deselect-all");
+
+#[derive(Clone, Copy, Data, Debug, PartialEq, Eq)]
+pub struct Coords {
+    x: isize,
+    y: isize,
+}
+
+impl Coords {
+    pub fn new(x: isize, y: isize) -> Self {
+        Coords { x, y }
+    }
+
+    pub fn from_widget_space(pos: Point) -> Self {
+        Coords {
+            x: (pos.x / 16.).round() as isize,
+            y: (pos.y / 16.).round() as isize,
+        }
+    }
+
+    pub fn to_widget_space(&self) -> Point {
+        Point::new((self.x * 16) as f64, (self.y * 16) as f64)
+    }
+
+    pub fn from_canvas_space(pos: Point) -> Self {
+        Coords {
+            x: ((pos.x - 8.) / 16.).round() as isize,
+            y: ((pos.y - 8.) / 16.).round() as isize,
+        }
+    }
+
+    pub fn to_canvas_space(&self) -> Point {
+        self.to_widget_space() + Vec2::new(8.0, 8.0)
+    }
+}
 
 #[derive(Clone, Data)]
 pub enum Tool {
@@ -23,7 +60,7 @@ struct Dragging {
 pub struct CanvasState {
     components: Vector<ComponentState>,
     tool: Tool,
-    mouse_pos: Option<(usize, usize)>,
+    mouse_pos: Option<Coords>,
     last_orientation: Orientation,
 }
 
@@ -49,17 +86,6 @@ impl Canvas {
             component_types,
             component_widgets: Vec::new(),
         }
-    }
-
-    pub fn widget_space_to_coords(pos: Point) -> (usize, usize) {
-        (
-            ((pos.x - 8.) / 16.).round() as usize,
-            ((pos.y - 8.) / 16.).round() as usize,
-        )
-    }
-
-    pub fn coords_to_widget_space(x: usize, y: usize) -> Point {
-        Point::new((x * 16 + 8) as f64, (y * 16 + 8) as f64)
     }
 }
 
@@ -119,13 +145,13 @@ impl Widget<CanvasState> for Canvas {
                 }
             },
             (MouseMove(m), Tool::Hand) => {
-                let new_coords = Self::widget_space_to_coords(m.pos);
+                let new_coords = Coords::from_canvas_space(m.pos);
                 if data.mouse_pos != Some(new_coords) {
                     data.mouse_pos = Some(new_coords);
                 }
             },
             (MouseMove(m), Tool::Place(_, _)) => {
-                let new_coords = Self::widget_space_to_coords(m.pos);
+                let new_coords = Coords::from_canvas_space(m.pos);
                 if data.mouse_pos != Some(new_coords) {
                     data.mouse_pos = Some(new_coords);
                     ctx.request_paint();
@@ -135,9 +161,12 @@ impl Widget<CanvasState> for Canvas {
                 ctx.submit_command(DESELECT_ALL.with(ctx.widget_id()));
             },
             (MouseDown(ev), Tool::Place(ty, orientation)) if ev.button == MouseButton::Left => {
-                let (x, y) = Canvas::widget_space_to_coords(ev.pos);
-                data.components
-                    .push_back(ComponentState::new(x, y, Rc::clone(&ty), *orientation));
+                let coords = Coords::from_canvas_space(ev.pos);
+                data.components.push_back(ComponentState::new(
+                    coords,
+                    Rc::clone(&ty),
+                    *orientation,
+                ));
                 self.component_widgets.push(WidgetPod::new(Component));
                 ctx.children_changed();
                 // if we don't return, then we end up passing an event to an uninit widget
@@ -227,8 +256,8 @@ impl Widget<CanvasState> for Canvas {
 
         // cursor ghost
         if let Tool::Place(ref ty, orientation) = data.tool {
-            if let Some((x, y)) = data.mouse_pos {
-                let component = ComponentInstance::new(x, y, Rc::clone(&ty), orientation);
+            if let Some(c) = data.mouse_pos {
+                let component = ComponentInstance::new(c, Rc::clone(&ty), orientation);
                 ctx.with_save(|ctx| {
                     ctx.transform(Affine::translate(
                         component.bounding_rect().origin() - Point::ORIGIN,

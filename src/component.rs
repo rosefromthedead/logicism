@@ -1,8 +1,14 @@
 use std::{rc::Rc, str::FromStr};
 
-use druid::{Affine, Color, Data, Event, Insets, PaintCtx, Point, Rect, RenderContext, Size, Vec2, Widget, kurbo::RoundedRect, widget::SvgData};
+use druid::{
+    kurbo::RoundedRect, widget::SvgData, Affine, Color, Data, Event, Insets, PaintCtx, Point, Rect,
+    RenderContext, Size, Vec2, Widget,
+};
 
-use crate::{IDENTITY, canvas::{BEGIN_DRAG, Canvas, DESELECT_ALL}};
+use crate::{
+    canvas::{Coords, BEGIN_DRAG, DESELECT_ALL},
+    IDENTITY,
+};
 
 #[derive(Clone, Copy, Data, PartialEq, Eq)]
 pub enum Orientation {
@@ -28,8 +34,8 @@ pub struct ComponentType {
     /// The point that is represented by the coordinates of a component when it is oriented north
     anchor_offset: Vec2,
     pub icon: SvgData,
-    pub input_pins: Vec<Point>,
-    pub output_pins: Vec<Point>,
+    pub input_pins: Vec<Coords>,
+    pub output_pins: Vec<Coords>,
 }
 
 impl ComponentType {
@@ -38,29 +44,29 @@ impl ComponentType {
             size: Size::new(24.0, 48.0),
             anchor_offset: Vec2::new(12.0, 32.0),
             icon: SvgData::from_str(include_str!("../res/not_gate.svg")).unwrap(),
-            input_pins: vec![Point::new(12.0, 48.0)],
-            output_pins: vec![Point::new(12.0, 0.0)],
+            input_pins: vec![Coords::new(0, 1)],
+            output_pins: vec![Coords::new(0, -2)],
         };
         let and_gate = ComponentType {
             size: Size::new(48.0, 48.0),
             anchor_offset: Vec2::new(24.0, 32.0),
             icon: SvgData::from_str(include_str!("../res/and_gate.svg")).unwrap(),
-            input_pins: vec![Point::new(8.0, 48.0), Point::new(40.0, 48.0)],
-            output_pins: vec![Point::new(24.0, 0.0)],
+            input_pins: vec![Coords::new(-1, 1), Coords::new(1, 1)],
+            output_pins: vec![Coords::new(0, -2)],
         };
         let or_gate = ComponentType {
             size: Size::new(48.0, 48.0),
             anchor_offset: Vec2::new(24.0, 32.0),
             icon: SvgData::from_str(include_str!("../res/or_gate.svg")).unwrap(),
-            input_pins: vec![Point::new(8.0, 48.0), Point::new(40.0, 48.0)],
-            output_pins: vec![Point::new(24.0, 0.0)],
+            input_pins: vec![Coords::new(-1, 1), Coords::new(1, 1)],
+            output_pins: vec![Coords::new(0, -2)],
         };
         let nand_gate = ComponentType {
             size: Size::new(48.0, 48.0),
             anchor_offset: Vec2::new(24.0, 32.0),
             icon: SvgData::from_str(include_str!("../res/nand_gate.svg")).unwrap(),
-            input_pins: vec![Point::new(8.0, 48.0), Point::new(40.0, 48.0)],
-            output_pins: vec![Point::new(24.0, 0.0)],
+            input_pins: vec![Coords::new(-1, 1), Coords::new(1, 1)],
+            output_pins: vec![Coords::new(0, -2)],
         };
         vec![
             Rc::new(not_gate),
@@ -80,8 +86,8 @@ impl ComponentType {
         }
     }
 
-    pub fn bounding_rect(&self, x: usize, y: usize, orientation: Orientation) -> Rect {
-        let top_left = Canvas::coords_to_widget_space(x, y) - self.anchor_offset(orientation);
+    pub fn bounding_rect(&self, coords: Coords, orientation: Orientation) -> Rect {
+        let top_left = coords.to_canvas_space() - self.anchor_offset(orientation);
         let size = match orientation {
             Orientation::North | Orientation::South => self.size,
             Orientation::East | Orientation::West => Size::new(self.size.height, self.size.width),
@@ -92,24 +98,22 @@ impl ComponentType {
 
 #[derive(Clone, Data)]
 pub struct ComponentInstance {
-    x: usize,
-    y: usize,
+    coords: Coords,
     ty: Rc<ComponentType>,
     orientation: Orientation,
 }
 
 impl ComponentInstance {
-    pub fn new(x: usize, y: usize, ty: Rc<ComponentType>, orientation: Orientation) -> Self {
+    pub fn new(coords: Coords, ty: Rc<ComponentType>, orientation: Orientation) -> Self {
         ComponentInstance {
-            x,
-            y,
+            coords,
             ty,
             orientation,
         }
     }
 
     pub fn bounding_rect(&self) -> Rect {
-        self.ty.bounding_rect(self.x, self.y, self.orientation)
+        self.ty.bounding_rect(self.coords, self.orientation)
     }
 
     pub fn paint(&self, ctx: &mut PaintCtx) {
@@ -121,13 +125,16 @@ impl ComponentInstance {
             },
             Orientation::West => Affine::translate(Vec2::new(0.0, self.ty.size.height)),
         };
+        let rotate_center = recenter * Affine::rotate(self.orientation.angle());
 
         ctx.with_save(|ctx| {
-            ctx.transform(recenter * Affine::rotate(self.orientation.angle()));
+            ctx.transform(rotate_center);
             self.ty.icon.to_piet(IDENTITY, ctx);
+
+            ctx.transform(Affine::translate(self.anchor_offset()));
             for pin_pos in self.ty.input_pins.iter().chain(self.ty.output_pins.iter()) {
                 ctx.fill(
-                    Rect::from_center_size(*pin_pos, Size::new(2.0, 2.0)),
+                    Rect::from_center_size(pin_pos.to_widget_space(), Size::new(2.0, 2.0)),
                     &Color::GREEN,
                 );
             }
@@ -135,7 +142,7 @@ impl ComponentInstance {
     }
 
     fn anchor_offset(&self) -> Vec2 {
-        self.ty.anchor_offset(self.orientation)
+        self.ty.anchor_offset(Orientation::North)
     }
 }
 
@@ -147,9 +154,9 @@ pub struct ComponentState {
 }
 
 impl ComponentState {
-    pub fn new(x: usize, y: usize, ty: Rc<ComponentType>, orientation: Orientation) -> Self {
+    pub fn new(coords: Coords, ty: Rc<ComponentType>, orientation: Orientation) -> Self {
         ComponentState {
-            instance: ComponentInstance::new(x, y, ty, orientation),
+            instance: ComponentInstance::new(coords, ty, orientation),
             selected: false,
             dragging: None,
         }
@@ -186,11 +193,7 @@ impl Widget<ComponentState> for Component {
             },
             Event::MouseMove(ev) => {
                 if let Some(mouse_offset) = data.dragging {
-                    let new_coords = Canvas::widget_space_to_coords(ev.window_pos - mouse_offset);
-                    if data.instance.x != new_coords.0 || data.instance.y != new_coords.1 {
-                        data.instance.x = new_coords.0;
-                        data.instance.y = new_coords.1;
-                    }
+                    data.instance.coords = Coords::from_canvas_space(ev.window_pos - mouse_offset);
                 }
             },
             Event::KeyDown(ev) => {
@@ -263,7 +266,11 @@ impl Widget<ComponentState> for Component {
         if data.selected {
             // we're painting in widget space already so the bounding rect needs to be translated
             // back
-            let selection_rect = data.instance.bounding_rect().with_origin(Point::ORIGIN).inflate(4.0, 4.0);
+            let selection_rect = data
+                .instance
+                .bounding_rect()
+                .with_origin(Point::ORIGIN)
+                .inflate(4.0, 4.0);
             ctx.stroke(
                 RoundedRect::from_rect(selection_rect, 4.0),
                 &Color::AQUA,
