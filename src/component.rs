@@ -80,9 +80,9 @@ impl ComponentType {
         let a = self.anchor_offset;
         match orientation {
             Orientation::North => a,
-            Orientation::East => Vec2::new(self.size.width - a.y, a.x),
+            Orientation::East => Vec2::new(self.size.height - a.y, a.x),
             Orientation::South => Vec2::new(self.size.width - a.x, self.size.height - a.y),
-            Orientation::West => Vec2::new(a.y, self.size.height - a.x),
+            Orientation::West => Vec2::new(a.y, self.size.width - a.x),
         }
     }
 
@@ -123,7 +123,7 @@ impl ComponentInstance {
             Orientation::South => {
                 Affine::translate(Vec2::new(self.ty.size.width, self.ty.size.height))
             },
-            Orientation::West => Affine::translate(Vec2::new(0.0, self.ty.size.height)),
+            Orientation::West => Affine::translate(Vec2::new(0.0, self.ty.size.width)),
         };
         let rotate_center = recenter * Affine::rotate(self.orientation.angle());
 
@@ -216,6 +216,7 @@ impl Widget<ComponentState> for Component {
                 if *widget_id != ctx.widget_id() {
                     data.selected = false;
                     ctx.set_active(false);
+                    ctx.resign_focus();
                     ctx.request_paint();
                 }
             },
