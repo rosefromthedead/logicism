@@ -6,7 +6,7 @@ use druid::{
 };
 
 use crate::{
-    canvas::{Coords, BEGIN_DRAG, DESELECT_ALL},
+    canvas::{Coords, BEGIN_DRAG, BEGIN_WIRE_DRAW, DESELECT_ALL},
     IDENTITY,
 };
 
@@ -29,13 +29,33 @@ impl Orientation {
     }
 }
 
+#[derive(Debug)]
+enum PinType {
+    Input,
+    Output,
+}
+
+#[derive(Debug)]
+struct Pin {
+    pos: Coords,
+    ty: PinType,
+}
+
+impl Pin {
+    fn new(x: isize, y: isize, ty: PinType) -> Self {
+        Pin {
+            pos: Coords::new(x, y),
+            ty,
+        }
+    }
+}
+
 pub struct ComponentType {
     pub size: Size,
     /// The point that is represented by the coordinates of a component when it is oriented north
     anchor_offset: Vec2,
     pub icon: SvgData,
-    pub input_pins: Vec<Coords>,
-    pub output_pins: Vec<Coords>,
+    pins: Vec<Pin>,
 }
 
 impl ComponentType {
@@ -44,29 +64,40 @@ impl ComponentType {
             size: Size::new(24.0, 48.0),
             anchor_offset: Vec2::new(12.0, 32.0),
             icon: SvgData::from_str(include_str!("../res/not_gate.svg")).unwrap(),
-            input_pins: vec![Coords::new(0, 1)],
-            output_pins: vec![Coords::new(0, -2)],
+            pins: vec![
+                Pin::new(0, 1, PinType::Input),
+                Pin::new(0, -2, PinType::Output),
+            ],
         };
         let and_gate = ComponentType {
             size: Size::new(48.0, 48.0),
             anchor_offset: Vec2::new(24.0, 32.0),
             icon: SvgData::from_str(include_str!("../res/and_gate.svg")).unwrap(),
-            input_pins: vec![Coords::new(-1, 1), Coords::new(1, 1)],
-            output_pins: vec![Coords::new(0, -2)],
+            pins: vec![
+                Pin::new(-1, 1, PinType::Input),
+                Pin::new(1, 1, PinType::Input),
+                Pin::new(0, -2, PinType::Output),
+            ],
         };
         let or_gate = ComponentType {
             size: Size::new(48.0, 48.0),
             anchor_offset: Vec2::new(24.0, 32.0),
             icon: SvgData::from_str(include_str!("../res/or_gate.svg")).unwrap(),
-            input_pins: vec![Coords::new(-1, 1), Coords::new(1, 1)],
-            output_pins: vec![Coords::new(0, -2)],
+            pins: vec![
+                Pin::new(-1, 1, PinType::Input),
+                Pin::new(1, 1, PinType::Input),
+                Pin::new(0, -2, PinType::Output),
+            ],
         };
         let nand_gate = ComponentType {
             size: Size::new(48.0, 48.0),
             anchor_offset: Vec2::new(24.0, 32.0),
             icon: SvgData::from_str(include_str!("../res/nand_gate.svg")).unwrap(),
-            input_pins: vec![Coords::new(-1, 1), Coords::new(1, 1)],
-            output_pins: vec![Coords::new(0, -2)],
+            pins: vec![
+                Pin::new(-1, 1, PinType::Input),
+                Pin::new(1, 1, PinType::Input),
+                Pin::new(0, -2, PinType::Output),
+            ],
         };
         vec![
             Rc::new(not_gate),
@@ -117,24 +148,14 @@ impl ComponentInstance {
     }
 
     pub fn paint(&self, ctx: &mut PaintCtx) {
-        let recenter = match self.orientation {
-            Orientation::North => IDENTITY,
-            Orientation::East => Affine::translate(Vec2::new(self.ty.size.height, 0.0)),
-            Orientation::South => {
-                Affine::translate(Vec2::new(self.ty.size.width, self.ty.size.height))
-            },
-            Orientation::West => Affine::translate(Vec2::new(0.0, self.ty.size.width)),
-        };
-        let rotate_center = recenter * Affine::rotate(self.orientation.angle());
-
         ctx.with_save(|ctx| {
-            ctx.transform(rotate_center);
+            ctx.transform(self.rotate_about_anchor());
             self.ty.icon.to_piet(IDENTITY, ctx);
 
             ctx.transform(Affine::translate(self.anchor_offset()));
-            for pin_pos in self.ty.input_pins.iter().chain(self.ty.output_pins.iter()) {
+            for pin in self.ty.pins.iter() {
                 ctx.fill(
-                    Rect::from_center_size(pin_pos.to_widget_space(), Size::new(2.0, 2.0)),
+                    Rect::from_center_size(pin.pos.to_widget_space(), Size::new(2.0, 2.0)),
                     &Color::GREEN,
                 );
             }
@@ -143,6 +164,24 @@ impl ComponentInstance {
 
     fn anchor_offset(&self) -> Vec2 {
         self.ty.anchor_offset(Orientation::North)
+    }
+
+    fn rotate_about_anchor(&self) -> Affine {
+        let recenter = match self.orientation {
+            Orientation::North => IDENTITY,
+            Orientation::East => Affine::translate(Vec2::new(self.ty.size.height, 0.0)),
+            Orientation::South => {
+                Affine::translate(Vec2::new(self.ty.size.width, self.ty.size.height))
+            },
+            Orientation::West => Affine::translate(Vec2::new(0.0, self.ty.size.width)),
+        };
+        recenter * Affine::rotate(self.orientation.angle())
+    }
+
+    fn pin_bounding_rect(&self, i: usize) -> Rect {
+        let pin = &self.ty.pins[i];
+        let point = self.rotate_about_anchor() * (pin.pos.to_widget_space() + self.anchor_offset());
+        Rect::from_center_size(point, Size::new(6.0, 6.0))
     }
 }
 
@@ -163,7 +202,7 @@ impl ComponentState {
     }
 }
 
-pub struct Component;
+pub struct Component(pub usize);
 
 impl Widget<ComponentState> for Component {
     fn event(
@@ -175,17 +214,23 @@ impl Widget<ComponentState> for Component {
     ) {
         match event {
             Event::MouseDown(ev) => {
-                if !data.selected {
-                    data.selected = true;
-                    ctx.request_paint();
-                    if !ev.mods.ctrl() {
-                        ctx.submit_command(DESELECT_ALL.with(ctx.widget_id()));
+                if let Some(_pin) = (0..data.instance.ty.pins.len())
+                    .find(|i| data.instance.pin_bounding_rect(*i).contains(ev.pos))
+                {
+                    ctx.submit_command(BEGIN_WIRE_DRAW);
+                } else {
+                    if !data.selected {
+                        data.selected = true;
+                        ctx.request_paint();
+                        if !ev.mods.ctrl() {
+                            ctx.submit_command(DESELECT_ALL.with(ctx.widget_id()));
+                        }
                     }
-                }
 
-                ctx.submit_command(BEGIN_DRAG.with(ev.window_pos));
-                ctx.request_focus();
-                ctx.set_handled();
+                    ctx.submit_command(BEGIN_DRAG.with(ev.window_pos));
+                    ctx.request_focus();
+                    ctx.set_handled();
+                }
             },
             Event::MouseUp(_) => {
                 data.dragging = None;

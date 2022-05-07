@@ -5,6 +5,7 @@ use druid::{Affine, AppLauncher, Widget, WindowDesc};
 
 mod canvas;
 mod component;
+mod wire;
 
 use canvas::{Canvas, CanvasState};
 

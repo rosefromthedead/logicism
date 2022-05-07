@@ -1,19 +1,25 @@
-use std::rc::Rc;
+use std::{collections::BTreeMap, rc::Rc, sync::atomic::AtomicUsize};
 
 use druid::{
-    im::Vector, Affine, BoxConstraints, Color, Data, MouseButton, Point, Rect, RenderContext,
-    Selector, Size, Vec2, Widget, WidgetId, WidgetPod,
+    im, Affine, BoxConstraints, Color, Data, MouseButton, Point, Rect, RenderContext, Selector,
+    Size, Vec2, Widget, WidgetId, WidgetPod,
 };
 
-use crate::component::{Component, ComponentInstance, ComponentState, ComponentType, Orientation};
+use crate::{
+    component::{Component, ComponentInstance, ComponentState, ComponentType, Orientation},
+    wire::{Wire, WireSegment, WireState},
+};
 
 pub const BEGIN_DRAG: Selector<Point> = Selector::new("logicism/begin-drag");
 pub const DESELECT_ALL: Selector<WidgetId> = Selector::new("logicism/deselect-all");
+pub const BEGIN_WIRE_DRAW: Selector<()> = Selector::new("logicism/begin-wire-draw");
+
+static NEXT_ITEM_ID: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Clone, Copy, Data, Debug, PartialEq, Eq)]
 pub struct Coords {
-    x: isize,
-    y: isize,
+    pub x: isize,
+    pub y: isize,
 }
 
 impl Coords {
@@ -51,40 +57,40 @@ pub enum Tool {
 }
 
 #[derive(Clone, Data)]
-struct Dragging {
-    pub component: ComponentState,
-    pub mouse_offset: Vec2,
-}
-
-#[derive(Clone, Data)]
 pub struct CanvasState {
-    components: Vector<ComponentState>,
+    wires: im::OrdMap<usize, WireState>,
+    components: im::OrdMap<usize, ComponentState>,
     tool: Tool,
     mouse_pos: Option<Coords>,
     last_orientation: Orientation,
+    drawing: Option<Coords>,
 }
 
 impl CanvasState {
     pub fn new() -> Self {
         CanvasState {
-            components: Vector::new(),
+            wires: im::OrdMap::new(),
+            components: im::OrdMap::new(),
             tool: Tool::Hand,
             mouse_pos: None,
             last_orientation: Orientation::North,
+            drawing: None,
         }
     }
 }
 
 pub struct Canvas {
     component_types: Rc<Vec<Rc<ComponentType>>>,
-    component_widgets: Vec<WidgetPod<ComponentState, Component>>,
+    wires: BTreeMap<usize, WidgetPod<WireState, Wire>>,
+    components: BTreeMap<usize, WidgetPod<ComponentState, Component>>,
 }
 
 impl Canvas {
     pub fn new(component_types: Rc<Vec<Rc<ComponentType>>>) -> Self {
         Canvas {
             component_types,
-            component_widgets: Vec::new(),
+            wires: BTreeMap::new(),
+            components: BTreeMap::new(),
         }
     }
 }
@@ -97,12 +103,18 @@ impl Widget<CanvasState> for Canvas {
         data: &mut CanvasState,
         env: &druid::Env,
     ) {
-        for (widget, state) in self
-            .component_widgets
-            .iter_mut()
-            .zip(data.components.iter_mut())
-        {
+        for (id, widget) in self.wires.iter_mut() {
+            let state = data.wires.get_mut(id).unwrap();
             widget.event(ctx, event, state, env);
+        }
+
+        for (id, widget) in self.components.iter_mut() {
+            let state = data.components.get_mut(id).unwrap();
+            widget.event(ctx, event, state, env);
+        }
+
+        if ctx.is_handled() {
+            return;
         }
 
         use druid::keyboard_types::Key;
@@ -148,6 +160,9 @@ impl Widget<CanvasState> for Canvas {
                 let new_coords = Coords::from_canvas_space(m.pos);
                 if data.mouse_pos != Some(new_coords) {
                     data.mouse_pos = Some(new_coords);
+                    if data.drawing.is_some() {
+                        ctx.request_paint();
+                    }
                 }
             },
             (MouseMove(m), Tool::Place(_, _)) => {
@@ -157,20 +172,39 @@ impl Widget<CanvasState> for Canvas {
                     ctx.request_paint();
                 }
             },
-            (MouseDown(ev), Tool::Hand) if ev.button == MouseButton::Left && !ctx.is_handled() => {
+            (MouseDown(ev), Tool::Hand) if ev.button == MouseButton::Left => {
                 ctx.submit_command(DESELECT_ALL.with(ctx.widget_id()));
+            },
+            (MouseUp(ev), Tool::Hand) if ev.button == MouseButton::Left => {
+                if let Some(wire_start) = data.drawing {
+                    if let Some(segment) = WireSegment::new(wire_start, data.mouse_pos.unwrap()) {
+                        // TODO: merge connected segments
+                        let id = NEXT_ITEM_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let widget = WidgetPod::new(Wire(id));
+                        self.wires.insert(id, widget);
+                        let state = WireState {
+                            segments: im::Vector::from(&[segment][..]),
+                        };
+                        data.wires.insert(id, state);
+                        ctx.children_changed();
+                    }
+                }
+                data.drawing = None;
             },
             (MouseDown(ev), Tool::Place(ty, orientation)) if ev.button == MouseButton::Left => {
                 let coords = Coords::from_canvas_space(ev.pos);
-                data.components.push_back(ComponentState::new(
-                    coords,
-                    Rc::clone(&ty),
-                    *orientation,
-                ));
-                self.component_widgets.push(WidgetPod::new(Component));
+                let id = NEXT_ITEM_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.components.insert(id, WidgetPod::new(Component(id)));
+                data.components.insert(
+                    id,
+                    ComponentState::new(coords, Rc::clone(&ty), *orientation),
+                );
                 ctx.children_changed();
-                // if we don't return, then we end up passing an event to an uninit widget
-                return;
+                ctx.request_paint();
+            },
+            (Command(c), _) if c.is(BEGIN_WIRE_DRAW) => {
+                let widget_idx = c.get(BEGIN_WIRE_DRAW).unwrap();
+                data.drawing = Some(data.mouse_pos.unwrap());
             },
             _ => {},
         }
@@ -191,12 +225,12 @@ impl Widget<CanvasState> for Canvas {
             _ => {},
         }
 
-        for (widget, state) in self
-            .component_widgets
-            .iter_mut()
-            .zip(data.components.iter())
-        {
-            widget.lifecycle(ctx, event, state, env);
+        for (widget, data) in self.wires.values_mut().zip(data.wires.values()) {
+            widget.lifecycle(ctx, event, data, env);
+        }
+
+        for (widget, data) in self.components.values_mut().zip(data.components.values()) {
+            widget.lifecycle(ctx, event, data, env);
         }
     }
 
@@ -207,14 +241,29 @@ impl Widget<CanvasState> for Canvas {
         data: &CanvasState,
         env: &druid::Env,
     ) {
-        for (widget, (new, old)) in self
-            .component_widgets
+        for (widget, new, old) in self
+            .wires
             .iter_mut()
-            .zip(data.components.iter().zip(old_data.components.iter()))
+            .map(|(id, widget)| (widget, &data.wires[id], old_data.wires.get(id)))
         {
             widget.update(ctx, new, env);
-            if !Data::same(&new.instance, &old.instance) {
-                ctx.request_layout();
+            if let Some(old) = old {
+                if !Data::same(&new.segments, &old.segments) {
+                    ctx.request_layout();
+                }
+            }
+        }
+
+        for (widget, new, old) in self
+            .components
+            .iter_mut()
+            .map(|(id, widget)| (widget, &data.components[id], old_data.components.get(id)))
+        {
+            widget.update(ctx, new, env);
+            if let Some(old) = old {
+                if !Data::same(&new.instance, &old.instance) {
+                    ctx.request_layout();
+                }
             }
         }
     }
@@ -226,11 +275,12 @@ impl Widget<CanvasState> for Canvas {
         data: &CanvasState,
         env: &druid::Env,
     ) -> Size {
-        for (widget, data) in self
-            .component_widgets
-            .iter_mut()
-            .zip(data.components.iter())
-        {
+        for (widget, data) in self.wires.values_mut().zip(data.wires.values()) {
+            widget.set_origin(ctx, data, env, data.bounding_rect().origin());
+            widget.layout(ctx, &BoxConstraints::UNBOUNDED, data, env);
+        }
+
+        for (widget, data) in self.components.values_mut().zip(data.components.values()) {
             widget.set_origin(ctx, data, env, data.instance.bounding_rect().origin());
             widget.layout(ctx, &BoxConstraints::UNBOUNDED, data, env);
         }
@@ -267,13 +317,24 @@ impl Widget<CanvasState> for Canvas {
             }
         }
 
-        // components
-        for (widget, state) in self
-            .component_widgets
-            .iter_mut()
-            .zip(data.components.iter())
-        {
-            widget.paint(ctx, state, env);
+        // drawing wire
+        if let Some(drawing) = data.drawing {
+            if let Some(segment) = WireSegment::new(drawing, data.mouse_pos.unwrap()) {
+                ctx.with_save(|ctx| {
+                    ctx.transform(Affine::translate(
+                        segment.bounding_rect().origin() - Point::ORIGIN,
+                    ));
+                    segment.paint(ctx);
+                });
+            }
+        }
+
+        for (widget, data) in self.wires.values_mut().zip(data.wires.values()) {
+            widget.paint(ctx, data, env);
+        }
+
+        for (widget, data) in self.components.values_mut().zip(data.components.values()) {
+            widget.paint(ctx, data, env);
         }
     }
 }
