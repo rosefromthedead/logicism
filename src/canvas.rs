@@ -319,14 +319,24 @@ impl Widget<CanvasState> for Canvas {
 
         // drawing wire
         if let Some(drawing) = data.drawing {
-            if let Some(segment) = WireSegment::new(drawing, data.mouse_pos.unwrap()) {
-                ctx.with_save(|ctx| {
-                    ctx.transform(Affine::translate(
-                        segment.bounding_rect().origin() - Point::ORIGIN,
-                    ));
-                    segment.paint(ctx);
-                });
+            // snap start->mouse_pos line to compass directions
+            let mut mouse_pos = data.mouse_pos.unwrap();
+            let is_horizontal_draw =
+                mouse_pos.x.abs_diff(drawing.x) > mouse_pos.y.abs_diff(drawing.y);
+            if is_horizontal_draw {
+                mouse_pos.y = drawing.y;
+            } else {
+                mouse_pos.x = drawing.x;
             }
+
+            // unwrap: since we just snapped mouse_pos, it can't be None
+            let segment = WireSegment::new(drawing, mouse_pos).unwrap();
+            ctx.with_save(|ctx| {
+                ctx.transform(Affine::translate(
+                    segment.bounding_rect().origin() - Point::ORIGIN,
+                ));
+                segment.paint(ctx);
+            });
         }
 
         for (widget, data) in self.wires.values_mut().zip(data.wires.values()) {
