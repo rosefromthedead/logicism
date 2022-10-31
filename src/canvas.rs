@@ -24,7 +24,6 @@ impl WireDraw {
     }
 }
 
-pub const BEGIN_DRAG: Selector<Point> = Selector::new("logicism/begin-drag");
 pub const DESELECT_ALL: Selector<WidgetId> = Selector::new("logicism/deselect-all");
 pub const BEGIN_WIRE_DRAW: Selector<WireDraw> = Selector::new("logicism/begin-wire-draw");
 
@@ -72,6 +71,12 @@ impl std::ops::Add<Coords> for Coords {
             x: self.x + rhs.x,
             y: self.y + rhs.y,
         }
+    }
+}
+
+impl std::ops::AddAssign<Coords> for Coords {
+    fn add_assign(&mut self, rhs: Coords) {
+        *self = *self + rhs
     }
 }
 

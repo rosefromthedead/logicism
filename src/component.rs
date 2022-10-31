@@ -6,7 +6,7 @@ use druid::{
 };
 
 use crate::{
-    canvas::{Coords, WireDraw, BEGIN_DRAG, BEGIN_WIRE_DRAW, DESELECT_ALL},
+    canvas::{Coords, WireDraw, BEGIN_WIRE_DRAW, DESELECT_ALL},
     IDENTITY,
 };
 
@@ -189,7 +189,7 @@ impl ComponentInstance {
 pub struct ComponentState {
     pub instance: ComponentInstance,
     selected: bool,
-    dragging: Option<Vec2>,
+    dragging: Option<(Coords, Point)>,
 }
 
 impl ComponentState {
@@ -232,7 +232,8 @@ impl Widget<ComponentState> for Component {
                         }
                     }
 
-                    ctx.submit_command(BEGIN_DRAG.with(ev.window_pos));
+                    data.dragging = Some((data.instance.coords, ev.window_pos));
+                    ctx.set_active(true);
                     ctx.request_focus();
                     ctx.set_handled();
                 }
@@ -242,8 +243,9 @@ impl Widget<ComponentState> for Component {
                 ctx.set_active(false);
             },
             Event::MouseMove(ev) => {
-                if let Some(mouse_offset) = data.dragging {
-                    data.instance.coords = Coords::from_canvas_space(ev.window_pos - mouse_offset);
+                if let Some((coords, mouse_origin)) = data.dragging {
+                    let delta = ev.window_pos - mouse_origin.to_vec2();
+                    data.instance.coords = coords + Coords::from_widget_space(delta);
                 }
             },
             Event::KeyDown(ev) => {
@@ -269,15 +271,6 @@ impl Widget<ComponentState> for Component {
                     ctx.resign_focus();
                     ctx.request_paint();
                 }
-            },
-            Event::Command(c) if c.is(BEGIN_DRAG) && data.selected => {
-                let window_pos = c.get(BEGIN_DRAG).unwrap();
-                data.dragging = Some(
-                    *window_pos
-                        - data.instance.anchor_offset()
-                        - data.instance.bounding_rect().origin(),
-                );
-                ctx.set_active(true);
             },
             _ => {},
         }
