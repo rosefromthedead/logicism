@@ -6,7 +6,7 @@ use druid::{
 };
 
 use crate::{
-    canvas::{Coords, BEGIN_DRAG, BEGIN_WIRE_DRAW, DESELECT_ALL},
+    canvas::{Coords, WireDraw, BEGIN_DRAG, BEGIN_WIRE_DRAW, DESELECT_ALL},
     IDENTITY,
 };
 
@@ -214,10 +214,15 @@ impl Widget<ComponentState> for Component {
     ) {
         match event {
             Event::MouseDown(ev) => {
-                if let Some(_pin) = (0..data.instance.ty.pins.len())
+                if let Some(pin) = (0..data.instance.ty.pins.len())
                     .find(|i| data.instance.pin_bounding_rect(*i).contains(ev.pos))
                 {
-                    ctx.submit_command(BEGIN_WIRE_DRAW);
+                    let anchor = data.instance.ty.anchor_offset(data.instance.orientation);
+                    ctx.submit_command(BEGIN_WIRE_DRAW.with(WireDraw::FromComponent {
+                        id: self.0,
+                        pin,
+                        loc: Coords::from_widget_space(ev.pos - anchor) + data.instance.coords,
+                    }));
                 } else {
                     if !data.selected {
                         data.selected = true;

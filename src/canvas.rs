@@ -10,9 +10,23 @@ use crate::{
     wire::{Wire, WireSegment, WireState},
 };
 
+#[derive(Clone, Data)]
+pub enum WireDraw {
+    FromComponent { id: usize, pin: usize, loc: Coords },
+    FromWire { id: usize, loc: Coords },
+}
+
+impl WireDraw {
+    fn start_point(&self) -> Coords {
+        match self {
+            WireDraw::FromComponent { loc, .. } | WireDraw::FromWire { loc, .. } => *loc,
+        }
+    }
+}
+
 pub const BEGIN_DRAG: Selector<Point> = Selector::new("logicism/begin-drag");
 pub const DESELECT_ALL: Selector<WidgetId> = Selector::new("logicism/deselect-all");
-pub const BEGIN_WIRE_DRAW: Selector<()> = Selector::new("logicism/begin-wire-draw");
+pub const BEGIN_WIRE_DRAW: Selector<WireDraw> = Selector::new("logicism/begin-wire-draw");
 
 static NEXT_ITEM_ID: AtomicUsize = AtomicUsize::new(0);
 
@@ -50,6 +64,17 @@ impl Coords {
     }
 }
 
+impl std::ops::Add<Coords> for Coords {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self {
+        Coords {
+            x: self.x + rhs.x,
+            y: self.y + rhs.y,
+        }
+    }
+}
+
 #[derive(Clone, Data)]
 pub enum Tool {
     Hand,
@@ -63,7 +88,7 @@ pub struct CanvasState {
     tool: Tool,
     mouse_pos: Option<Coords>,
     last_orientation: Orientation,
-    drawing: Option<Coords>,
+    drawing: Option<WireDraw>,
 }
 
 impl CanvasState {
@@ -176,8 +201,10 @@ impl Widget<CanvasState> for Canvas {
                 ctx.submit_command(DESELECT_ALL.with(ctx.widget_id()));
             },
             (MouseUp(ev), Tool::Hand) if ev.button == MouseButton::Left => {
-                if let Some(wire_start) = data.drawing {
-                    if let Some(segment) = WireSegment::new(wire_start, data.mouse_pos.unwrap()) {
+                if let Some(wire_draw) = &data.drawing {
+                    if let Some(segment) =
+                        WireSegment::new(wire_draw.start_point(), data.mouse_pos.unwrap())
+                    {
                         // TODO: merge connected segments
                         let id = NEXT_ITEM_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         let widget = WidgetPod::new(Wire(id));
@@ -203,8 +230,8 @@ impl Widget<CanvasState> for Canvas {
                 ctx.request_paint();
             },
             (Command(c), _) if c.is(BEGIN_WIRE_DRAW) => {
-                let widget_idx = c.get(BEGIN_WIRE_DRAW).unwrap();
-                data.drawing = Some(data.mouse_pos.unwrap());
+                let wire_draw = c.get(BEGIN_WIRE_DRAW).unwrap().clone();
+                data.drawing = Some(wire_draw);
             },
             _ => {},
         }
@@ -318,19 +345,20 @@ impl Widget<CanvasState> for Canvas {
         }
 
         // drawing wire
-        if let Some(drawing) = data.drawing {
+        if let Some(wire_draw) = &data.drawing {
+            let start_point = wire_draw.start_point();
             // snap start->mouse_pos line to compass directions
             let mut mouse_pos = data.mouse_pos.unwrap();
             let is_horizontal_draw =
-                mouse_pos.x.abs_diff(drawing.x) > mouse_pos.y.abs_diff(drawing.y);
+                mouse_pos.x.abs_diff(start_point.x) > mouse_pos.y.abs_diff(start_point.y);
             if is_horizontal_draw {
-                mouse_pos.y = drawing.y;
+                mouse_pos.y = start_point.y;
             } else {
-                mouse_pos.x = drawing.x;
+                mouse_pos.x = start_point.x;
             }
 
             // unwrap: since we just snapped mouse_pos, it can't be None
-            let segment = WireSegment::new(drawing, mouse_pos).unwrap();
+            let segment = WireSegment::new(start_point, mouse_pos).unwrap();
             ctx.with_save(|ctx| {
                 ctx.transform(Affine::translate(
                     segment.bounding_rect().origin() - Point::ORIGIN,
