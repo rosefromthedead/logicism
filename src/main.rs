@@ -14,7 +14,7 @@ const IDENTITY: Affine = Affine::scale(1.0);
 fn main() {
     let component_types = Rc::new(ComponentType::enumerate());
 
-    let window = WindowDesc::new(move || root_widget(Rc::clone(&component_types)))
+    let window = WindowDesc::new(root_widget(Rc::clone(&component_types)))
         .title("Logicism")
         .window_size((800.0, 600.0));
 
